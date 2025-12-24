@@ -68,36 +68,11 @@ def get_proposal_mattrs(tracer):
     #mattrs.update(cellsize=30)
     return mattrs
 
-def read_hdf5_blosc(filename,columns=None,extname='LSS'):
-    '''
-    copied from https://github.com/desihub/LSS/blob/1f27fafe4bf85fbf2a3adecfa7d60b7eeff5988a/py/LSS/common_tools.py#L1745
-    read an extension from a hdf5 file that has been blosc compressed
-    filename is the full path to the file to read
-    columns is the list of columns to read; if None, all will be read
-    extname is the extension to read; if None, assumes no separate extensions
-    '''
-    # need to add log message when reading files
-    import h5py
-    import hdf5plugin #need to be in the cosmodesi test environment, as of Sep 4th 25
-    data = Table()
-    with h5py.File(filename) as fn:
-        if extname is None:
-            if columns is None:
-                columns = fn.keys()
-            for col in columns:
-                data[col] = fn[col][:]
 
-        else:
-            if columns is None:
-                columns = fn[extname].keys()
-            for col in columns:
-                data[col] = fn[extname][col][:]
-
-    return data
-    
 def get_catalog_dir(survey='Y1', verspec='iron', version='v1.2', base_dir='/global/cfs/cdirs/desi/survey/catalogs'):
     base_dir = Path(base_dir)
     return base_dir / survey / 'LSS' / verspec / 'LSScats' / version
+
 
 def get_catalog_fn(base_dir='/global/cfs/cdirs/desi/survey/catalogs', kind='data', tracer='LRG', weight_type='bitwise', zrange=(0.8, 1.1), region='NGC', nran=10, fmt='h5', **kwargs):
     # if 'bitwise' in weight_type: is not implemented yet 
@@ -273,14 +248,8 @@ def get_clustering_rdzw(*fns, kind=None, zrange=None, region=None, tracer=None, 
         irank = ifn % mpicomm.size
         catalogs[ifn] = (irank, None)
         if mpicomm.rank == irank:  # Faster to read catalogs from one rank
-            if 'fits' in str(fn):
-                catalog = Catalog.read(fn, mpicomm=MPI.COMM_SELF)
-                catalog.get(catalog.columns())  # Faster to read all columns at once
-            else:
-                import logging
-                logger = logging.getLogger('get_clustering_rdzw') 
-                logger.info(f'Reading {fn}')
-                catalog = Catalog(data=read_hdf5_blosc(fn), mpicomm=MPI.COMM_SELF)
+            catalog = Catalog.read(fn, mpicomm=MPI.COMM_SELF, group='LSS')
+            catalog.get(catalog.columns())  # Faster to read all columns at once
             columns = ['RA', 'DEC', 'Z', 'WEIGHT', 'WEIGHT_SYS', 'WEIGHT_ZFAIL', 'WEIGHT_COMP', 'WEIGHT_FKP', 'BITWEIGHTS', 'FRAC_TLOBS_TILES', 'NTILE']
             columns = [col for col in columns if col in catalog.columns()]
             catalog = catalog[columns]
@@ -325,7 +294,7 @@ def get_full_rdw(*fns, kind='parent', zrange=None, region=None, tracer=None, wei
         irank = ifn % mpicomm.size
         catalogs[ifn] = (irank, None)
         if mpicomm.rank == irank:  # Faster to read catalogs from one rank
-            catalog = Catalog.read(fn, mpicomm=MPI.COMM_SELF)
+            catalog = Catalog.read(fn, mpicomm=MPI.COMM_SELF, group='LSS')
             catalog.get(catalog.columns())  # Faster to read all columns at once
             columns = ['RA', 'DEC', 'LOCATION_ASSIGNED', 'BITWEIGHTS', 'NTILE', 'WEIGHT_NTILE']
             columns = [col for col in columns if col in catalog.columns()]
