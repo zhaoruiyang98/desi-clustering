@@ -93,7 +93,7 @@ def get_catalog_fn(base_dir='/global/cfs/cdirs/desi/survey/catalogs', kind='data
 
 def get_power_fn(base_dir=os.getenv('PSCRATCH'), kind='', file_type='h5', region='', tracer='ELG', tracer2=None, zmin=0, zmax=np.inf, weight_type='default',
                  weight_type2='default', nran=None, option=None, cut=None, auw=None,
-                 P0=None,P02=None,ric_dir=None, boxsize=None, cellsize=None):
+                 P0=None,P02=None,ric_dir=None, boxsize=None, cellsize=None,test=False):
     base_dir = Path(base_dir)
     weight_type1=weight_type
     if tracer2: tracer += '_' + tracer2
@@ -108,14 +108,16 @@ def get_power_fn(base_dir=os.getenv('PSCRATCH'), kind='', file_type='h5', region
         zmax = str(zmax) + option
 
     root = '{}_z{}-{}_{}'.format(tracer, zmin, zmax, weight_type)
-    # if nran is not None:
-    #     root += '_nran{}'.format(nran)
-    # if cellsize is not None:
-    #     root += '_cellsize{}'.format(cellsize)   
-    # if isinstance(boxsize, list): 
-    #     root += '_boxsize{}_{}_{}'.format(int(boxsize[0]),int(boxsize[1]),int(boxsize[2]))
-    # else:
-    #     root += '_boxsize{}'.format(int(boxsize))
+    if test:
+        # useful for testing
+        if nran is not None:
+            root += '_nran{}'.format(nran)
+        if cellsize is not None:
+            root += '_cellsize{}'.format(cellsize)   
+        if isinstance(boxsize, list): 
+            root += '_boxsize{}_{}_{}'.format(int(boxsize[0]),int(boxsize[1]),int(boxsize[2]))
+        else:
+            root += '_boxsize{}'.format(int(boxsize))
     if P0 is not None:
         root += '_P0-{}'.format(P0)
     if P02 is not None:
