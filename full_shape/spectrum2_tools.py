@@ -83,7 +83,8 @@ def compute_mesh2_spectrum(*particles, cut=None, auw=None,
     jitted_compute_mesh2_spectrum = jax.jit(compute_mesh2_spectrum, static_argnames=['los'], donate_argnums=[0])
     #jitted_compute_mesh2_spectrum = compute_mesh2_spectrum
     kw = dict(resampler='tsc', interlacing=3, compensate=True)
-    spectrum = jitted_compute_mesh2_spectrum(*[fkp.paint(**kw, out='complex') for fkp in all_fkp], bin=bin, los=los)
+    # out='real' to save memory
+    spectrum = jitted_compute_mesh2_spectrum(*[fkp.paint(**kw, out='real') for fkp in all_fkp], bin=bin, los=los)
     spectrum = spectrum.clone(norm=norm, num_shotnoise=num_shotnoise, attrs=attrs)
 
     results = {'raw': spectrum}
@@ -116,7 +117,7 @@ def compute_mesh2_spectrum(*particles, cut=None, auw=None,
 
     jax.block_until_ready(results)
     if jax.process_index() == 0:
-        logger.info(f'Particle-based calculation finished.')
+        logger.info(f'Particle-based calculation finished')
 
     if len(results) == 1:
         return next(iter(results.values()))

@@ -112,13 +112,14 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
 
     if cat_dir is None:  # pre-registered paths
         if version == 'data-dr1-v1.5':
-            cat_dir = desi_dir / f'Y1/LSS/iron/LSScats'
+            cat_dir = desi_dir / f'survey/catalogs/Y1/LSS/iron/LSScats'
             if 'bitwise' in weight_type:
                 cat_dir = cat_dir / 'v1.5pip'
             else:
                 cat_dir = cat_dir / 'v1.5'
+            ext = 'fits'
         elif version == 'data-dr2-v2':
-            cat_dir = desi_dir / f'DA2/LSS/loa-v1/LSScats/v2'
+            cat_dir = desi_dir / f'survey/catalogs/DA2/LSS/loa-v1/LSScats/v2'
             if 'bitwise' in weight_type:
                 data_dir = cat_dir / 'PIP'
             else:

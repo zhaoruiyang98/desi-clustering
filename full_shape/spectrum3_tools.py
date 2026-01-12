@@ -39,7 +39,8 @@ def compute_mesh3_spectrum(*particles,
     num_shotnoise = compute_fkp3_shotnoise(*all_fkp, los=los, bin=bin, **kw)
     jitted_compute_mesh3_spectrum = jax.jit(compute_mesh3_spectrum, static_argnames=['los'], donate_argnums=[0])
 
-    spectrum = jitted_compute_mesh3_spectrum(*[fkp.paint(**kw, out='complex') for fkp in all_fkp], los=los, bin=bin)
+    # out='real' to save memory
+    spectrum = jitted_compute_mesh3_spectrum(*[fkp.paint(**kw, out='real') for fkp in all_fkp], los=los, bin=bin)
     spectrum = spectrum.clone(norm=norm, num_shotnoise=num_shotnoise, attrs=attrs)
 
     jax.block_until_ready(spectrum)

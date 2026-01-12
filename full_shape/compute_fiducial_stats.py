@@ -17,6 +17,14 @@ from recon_tools import compute_reconstruction
 logger = logging.getLogger('summary-statistics')
 
 
+def _merge_options(options1, options2):
+    options = {key: dict(value) for key, value in options1.items()}
+    for key, value in options2.items():
+        if key not in options: options[key] = {}
+        options[key].update(value)
+    return options
+
+
 def _fill_fiducial_options(**kwargs):
     options = {key: dict(value) for key, value in kwargs.items()}
     tracer = options['catalog']['tracer']
@@ -182,12 +190,14 @@ def main(**kwargs):
     parser = argparse.ArgumentParser()
     parser.add_argument('--stats', help='what do you want to compute?', type=str, nargs='*', choices=['mesh2_spectrum', 'mesh3_spectrum', 'recon_particle2_correlation'], default=['mesh2_spectrum'])
     parser.add_argument('--version', help='catalog version; e.g. holi-v1-altmtl', type=str, default=None)
-    parser.add_argument('--cat_dir', help='where to find catalogs', type=str, default='/dvs_ro/cfs/cdirs/desi/survey/catalogs/')
+    parser.add_argument('--cat_dir', help='where to find catalogs', type=str, default=None)
     parser.add_argument('--tracer', help='tracer(s) to be selected - e.g. LRGxELG for cross-correlation', type=str, default='LRG')
     parser.add_argument('--zrange', help='redshift bins; 0.4 0.6 0.8 1.1 to run (0.4, 0.6), (0.8, 1.1)', nargs='*', type=float, default=None)
     parser.add_argument('--imock', type=int, nargs='*', default=[None])
     parser.add_argument('--region', help='regions', type=str, nargs='*', choices=['N', 'S', 'NGC', 'SGC', 'NGCnoN', 'SGCnoDES'], default=['NGC', 'SGC'])
     parser.add_argument('--weight_type',  help='type of weights to use for tracer; "default" just uses WEIGHT column', type=str, default='default_FKP')
+    parser.add_argument('--thetacut',  help='Apply theta-cut', action='store_true', default=None)
+    parser.add_argument('--auw',  help='Apply angular upweighting', action='store_true', default=None)
     parser.add_argument('--boxsize',  help='box size', type=float, default=None)
     parser.add_argument('--cellsize', help='cell size', type=float, default=None)
     parser.add_argument('--nran', help='number of random files to combine together (1-18 available)', type=int, default=None)
@@ -208,32 +218,29 @@ def main(**kwargs):
     else:
         assert len(args.zrange) % 2 == 0
         zranges = list(zip(args.zrange[::2], args.zrange[1::2]))
-    mattrs = {key: value for key, value in dict(boxsize=args.boxsize, cellsize=args.cellsize).items() if key is not None}
-    kwargs = {'mattrs': mattrs} | {'mesh2_spectrum': {}} | kwargs
-    weight_type = args.weight_type
-    if weight_type.endswith('_auw'):
-        for stat in kwargs: kwargs[stat].update(auw=True)
-        weight_type = weight_type[:-len('_auw')]
-    elif weight_type.endswith('_thetacut'):
-        for stat in kwargs: kwargs[stat].update(cut=True)
-        weight_type = weight_type[:-len('_thetacut')]
+    mattrs = {key: value for key, value in dict(boxsize=args.boxsize, cellsize=args.cellsize).items() if value is not None}
+    options = {'mattrs': mattrs}
+    for stat in ['mesh2_spectrum']:
+        options.setdefault(stat, {})
+        options[stat].update(cut=args.thetacut, auw=args.auw)
+    options = _merge_options(options, kwargs)
     get_measurement_fn = functools.partial(tools.get_measurement_fn, meas_dir=args.meas_dir, extra=args.meas_extra)
     cache = {}
     for zrange in zranges:
         for imock in args.imock:
-            catalog_args = dict(version=args.version, cat_dir=args.cat_dir, tracer=args.tracer, zrange=zrange, weight_type=weight_type, nran=args.nran, imock=imock)
-            kwargs = _fill_fiducial_options(catalog=catalog_args, **kwargs)
+            catalog_args = dict(version=args.version, cat_dir=args.cat_dir, tracer=args.tracer, zrange=zrange, weight_type=args.weight_type, nran=args.nran, imock=imock)
+            options_imock = _fill_fiducial_options(catalog=catalog_args, **options)
             for region in args.region:
-                _kwargs = dict(kwargs)
-                _kwargs['catalog'] = _kwargs['catalog'] | dict(region=region)
+                _options_imock = dict(options_imock)
+                _options_imock['catalog'] = _options_imock['catalog'] | dict(region=region)
                 compute_fiducial_stats_from_options(args.stats,
                                                                  get_measurement_fn=get_measurement_fn,
-                                                                 cache=cache, **_kwargs)
+                                                                 cache=cache, **_options_imock)
                 jax.experimental.multihost_utils.sync_global_devices('measurements')
             if args.combine:
                 if jax.process_index() == 0:
                     for region_comb, regions in tools.possible_combine_regions(args.region).items():
-                        combine_fiducial_stats_from_options(args.stats, region_comb, regions, get_measurement_fn=get_measurement_fn, **kwargs)
+                        combine_fiducial_stats_from_options(args.stats, region_comb, regions, get_measurement_fn=get_measurement_fn, **options_imock, **kwargs)
     if args.stats:
         jax.distributed.shutdown()
 
