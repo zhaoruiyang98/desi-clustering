@@ -1,17 +1,31 @@
 import os
 import logging
 from pathlib import Path
+from collections.abc import Callable
+import functools
 
 import numpy as np
 
-from mockfactory import Catalog, setup_logging, sky_to_cartesian
-import lsstypes as types
+from mpi4py import MPI
+from mockfactory import Catalog, sky_to_cartesian
 
 
-logger = logging.getLogger('io')
+logger = logging.getLogger('tools')
 
 
 desi_dir = Path('/dvs_ro/cfs/cdirs/desi/')
+
+
+def default_mpicomm(func: Callable):
+    """Wrapper to provide a default MPI communicator."""
+    @functools.wraps(func)
+    def wrapper(*args, mpicomm=None, **kwargs):
+        if mpicomm is None:
+            from mpi4py import MPI
+            mpicomm = MPI.COMM_WORLD
+        return func(*args, mpicomm=mpicomm, **kwargs)
+
+    return wrapper
 
 
 def load_footprint():
@@ -85,6 +99,8 @@ def select_region(ra, dec, region=None):
 def propose_fiducial(kind, tracer):
     cellsize = 7.8
     base = {'particle2_correlation': {}, 'mesh2_spectrum': {}, 'mesh3_spectrum': {}}
+    for name in list(base):
+        base[f'recon_{name}'] = base[name]  # same for post-recon measurements
     propose_fiducial = {
         'BGS': base | {'zranges': [(0.1, 0.4)], 'mattrs': dict(boxsize=4000., cellsize=cellsize), 'nran': 2, 'recon': dict(bias=1.5, smoothing_radius=15.)},
         'LRG+ELG': base | {'zranges': [(0.8, 1.1)], 'mattrs': dict(boxsize=9000., cellsize=cellsize), 'nran': 13, 'recon': dict(bias=1.6, smoothing_radius=15.)},
@@ -208,12 +224,22 @@ def popcount(*arrays):
     for array in arrays[1:]: toret += popcount(array)
     return toret
 
+def _format_bitweights(bitweights):
+    if bitweights is None:
+        return []
+    if isinstance(bitweights, (tuple, list)):
+        return bitweights
+    if bitweights.ndim == 2:
+        return list(bitweights.T)
+    return [bitweights]
+
 
 def _compute_ntmp(bitweights, loc_assigned, ntile):
     """
     nbits = 64 * np.shape(bitweights)[1]
     recurr = prob_obs * nbits
     """
+    bitweights = _format_bitweights(bitweights)
     # Input: list of bitweights
     nbits = 8 * sum(weight.dtype.itemsize for weight in bitweights)
     recurr = popcount(*bitweights)
@@ -231,6 +257,7 @@ def _compute_ntmp(bitweights, loc_assigned, ntile):
     return frac_missing_pw, frac_zero_prob
 
 
+@default_mpicomm
 def _read_catalog(fn, mpicomm=None):
     one_fn = fn[0] if isinstance(fn, (tuple, list)) else fn
     kw = {}
@@ -240,13 +267,12 @@ def _read_catalog(fn, mpicomm=None):
     return catalog
 
 
-def compute_ntmp(full_data_fn):
-    from mpi4py import MPI
-    mpicomm = MPI.COMM_WORLD
+@default_mpicomm
+def compute_ntmp(full_data_fn, mpicomm=None):
     ntmp = None
     if mpicomm.rank == 0:
         catalog = _read_catalog(full_data_fn, mpicomm=MPI.COMM_SELF)
-        ntmp = _compute_ntmp(_format_bitweights(catalog['BITWEIGHTS']), catalog['LOCATION_ASSIGNED'], catalog['NTILE'])
+        ntmp = _compute_ntmp(catalog['BITWEIGHTS'], catalog['LOCATION_ASSIGNED'], catalog['NTILE'])
     return mpicomm.bcast(ntmp, root=0)
 
 
@@ -257,9 +283,8 @@ def _compute_wntile(ntile, weight):
     return np.divide(sum_weight, sum_ntile, out=np.ones_like(sum_weight), where=~mask_zero_ntile)
 
 
-def compute_wntile(clustering_data_fn):
-    from mpi4py import MPI
-    mpicomm = MPI.COMM_WORLD
+@default_mpicomm
+def compute_wntile(clustering_data_fn, mpicomm=None):
     wntile = None
     if mpicomm.rank == 0:
         catalog = _read_catalog(clustering_data_fn, mpicomm=MPI.COMM_SELF)
@@ -271,14 +296,21 @@ def apply_wntile(ntile, wntile_table):
     return wntile_table[ntile]
 
 
-def _format_bitweights(bitweights):
-    if bitweights.ndim == 2: return list(bitweights.T)
-    return [bitweights]
+def get_positions_from_rdz(catalog):
+    from cosmoprimo.fiducial import TabulatedDESI, DESI
+    fiducial = TabulatedDESI()  # faster than DESI/class (which takes ~30 s for 10 random catalogs)
+    dist = fiducial.comoving_radial_distance(catalog['Z'])
+    catalog['POSITION'] = sky_to_cartesian(dist, catalog['RA'], catalog['DEC'], dtype=dist.dtype)
+    return catalog
 
 
-def read_clustering_rdzw(*fns, kind=None, zrange=None, region=None, weight_type='default', ntmp=None, concatenate=True, **kwargs):
-    from mpi4py import MPI
-    mpicomm = MPI.COMM_WORLD
+@default_mpicomm
+def read_clustering_catalog(*fns, kind=None, zrange=None, region=None, weight_type='default', ntmp=None, concatenate=True,
+                            get_positions_from_rdz=get_positions_from_rdz, mpicomm=None, **kwargs):
+
+    exists = {os.path.exists(fn): fn for fn in fns}
+    if not all(exists):
+        raise IOError('Catalogs {[fn for ex, fn in exists.items() if not ex]} do not exist!')
 
     catalogs = [None] * len(fns)
     for ifn, fn in enumerate(fns):
@@ -286,7 +318,7 @@ def read_clustering_rdzw(*fns, kind=None, zrange=None, region=None, weight_type=
         catalogs[ifn] = (irank, None)
         if mpicomm.rank == irank:  # Faster to read catalogs from one rank
             catalog = _read_catalog(fn, mpicomm=MPI.COMM_SELF)
-            columns = ['RA', 'DEC', 'Z', 'WEIGHT', 'WEIGHT_SYS', 'WEIGHT_ZFAIL', 'WEIGHT_COMP', 'WEIGHT_FKP', 'BITWEIGHTS', 'FRAC_TLOBS_TILES', 'NTILE']
+            columns = ['RA', 'DEC', 'Z', 'WEIGHT', 'WEIGHT_SYS', 'WEIGHT_ZFAIL', 'WEIGHT_COMP', 'WEIGHT_FKP', 'BITWEIGHTS', 'FRAC_TLOBS_TILES', 'NTILE', 'NX']
             columns = [col for col in columns if col in catalog.columns()]
             catalog = catalog[columns]
             if zrange is not None:
@@ -305,28 +337,33 @@ def read_clustering_rdzw(*fns, kind=None, zrange=None, region=None, weight_type=
         if mpicomm.size > 1:
             catalog = Catalog.scatter(catalog, mpicomm=mpicomm, mpiroot=irank)
         individual_weight = catalog['WEIGHT']
-        bitwise_weights = []
+        bitwise_weights = None
         if 'bitwise' in weight_type:
             if kind == 'data':
                 individual_weight = catalog['WEIGHT'] / catalog['WEIGHT_COMP']
-                bitwise_weights = _format_bitweights(catalog['BITWEIGHTS'])
+                bitwise_weights = catalog['BITWEIGHTS']
             elif kind == 'randoms' and ntmp is not None:
                 individual_weight = catalog['WEIGHT'] * apply_wntmp(catalog['NTILE'], ntmp)
         if 'FKP' in weight_type.upper():
             individual_weight *= catalog['WEIGHT_FKP']
-        _rdzw = [catalog['RA'], catalog['DEC'], catalog['Z'], individual_weight] + bitwise_weights
-        for i in range(4): _rdzw[i] = _rdzw[i].astype('f8')
-        rdzw.append(_rdzw)
+        catalog = catalog[['RA', 'DEC', 'Z', 'NX']]
+        catalog['INDWEIGHT'] = individual_weight
+        for column in catalog: catalog[column] = catalog[column].astype('f8')
+        if bitwise_weights: catalog['BITWEIGHT'] = bitwise_weights
+        catalog = get_positions_from_rdz(catalog)
+        rdzw.append(catalog)
     if concatenate:
-        return [np.concatenate([arrays[i] for arrays in rdzw], axis=0) for i in range(len(rdzw[0]))]
+        return Catalog.concatenate(rdzw)
     else:
         return rdzw
 
 
-def read_full_rdw(*fns, kind='parent', region=None, weight_type='default', ntmp=None, wntile=None, **kwargs):
+@default_mpicomm
+def read_full_catalog(*fns, kind='parent', region=None, weight_type='default', ntmp=None, wntile=None, concatenate=True, mpicomm=None, **kwargs):
 
-    from mpi4py import MPI
-    mpicomm = MPI.COMM_WORLD
+    exists = {os.path.exists(fn): fn for fn in fns}
+    if not all(exists):
+        raise IOError('Catalogs {[fn for ex, fn in exists.items() if not ex]} do not exist!')
 
     catalogs = [None] * len(fns)
     for ifn, fn in enumerate(fns):
@@ -346,7 +383,7 @@ def read_full_rdw(*fns, kind='parent', region=None, weight_type='default', ntmp=
                 catalog = catalog[mask]
             catalogs[ifn] = (irank, catalog)
 
-    rdzw = []
+    rdw = []
     for irank, catalog in catalogs:
         if mpicomm.size > 1:
             catalog = Catalog.scatter(catalog, mpicomm=mpicomm, mpiroot=irank)
@@ -355,34 +392,24 @@ def read_full_rdw(*fns, kind='parent', region=None, weight_type='default', ntmp=
             #assert np.allclose(individual_weight, catalog['WEIGHT_NTILE'])
         else:
             individual_weight = catalog['WEIGHT_NTILE']
-        bitwise_weights = []
+        bitwise_weights = None
         if 'fibered' in kind and 'data' in kind:
             if ntmp is not None:
                 individual_weight /= apply_wntmp(catalog['NTILE'], ntmp)
-            bitwise_weights = _format_bitweights(catalog['BITWEIGHTS'])
+            bitwise_weights = catalog['BITWEIGHTS']
             if 'bitwise' not in weight_type:
                 individual_weight /= (catalog['FRACZ_TILELOCID'] * catalog['FRAC_TLOBS_TILES'])
-                bitwise_weights = []
-        rdzw.append([catalog['RA'], catalog['DEC'], individual_weight] + bitwise_weights)
-    rdzw = [np.concatenate([arrays[i] for arrays in rdzw], axis=0) for i in range(len(rdzw[0]))]
-    for i in range(3): rdzw[i] = rdzw[i].astype('f8')
-    return rdzw[:2], rdzw[2:]
-
-
-def get_positions_weights_from_rdzw(rdzw):
-    from cosmoprimo.fiducial import TabulatedDESI, DESI
-    fiducial = TabulatedDESI()  # faster than DESI/class (which takes ~30 s for 10 random catalogs)
-
-    def _get_clustering_positions_weights(ra, dec, z, weights):
-        weights = np.asarray(weights, dtype='f8')
-        dist = fiducial.comoving_radial_distance(z)
-        positions = sky_to_cartesian(dist, ra, dec, dtype='f8')
-        return positions, weights
-
-    if isinstance(rdzw[0], (tuple, list)):  # list of (RA, DEC, Z, W)
-        return [_get_clustering_positions_weights(*rdzw) for rdzw in rdzw]
+                bitwise_weights = None
+        catalog = catalog[['RA', 'DEC']]
+        catalog['INDWEIGHT'] = individual_weight
+        for column in catalog: catalog[column] = catalog[column].astype('f8')
+        if bitwise_weights is not None:
+            catalog['BITWEIGHT'] = bitwise_weights
+        rdw.append(catalog)
+    if concatenate:
+        return Catalog.concatenate(rdw)
     else:
-        return _get_clustering_positions_weights(*rdzw)
+        return rdw
 
 
 def write_summary_statistics(fn, stats):
@@ -404,3 +431,39 @@ def possible_combine_regions(regions):
         if all(region in _regions for region in regions):
             combs[_region_comb] = _regions
     return combs
+
+
+def compute_fkp_effective_redshift(*fkps, cellsize=10., order=2, split=None, func_of_z=lambda x: x,
+                                   resampler='cic'):
+    # FIXME
+    from jax import numpy as jnp
+    from cosmoprimo.fiducial import TabulatedDESI, DESI
+    from cosmoprimo.utils import Interpolator1D
+    from jaxpower import split_particles, FKPField
+    from jaxpower.mesh import _iter_meshes
+
+    fiducial = TabulatedDESI()
+    zmax, nz = 100., 512
+    zgrid = 1. / np.geomspace(1. / (1. + zmax), 1., nz)[::-1] - 1.
+    rgrid = fiducial.comoving_radial_distance(zgrid)
+    d2z = Interpolator1D(jnp.array(rgrid), jnp.array(func_of_z(zgrid)), k=3)
+
+    fkps_none =  list(fkps) + [None] * (order - len(fkps))
+
+    def get_randoms(fkp):
+        return fkp.randoms if isinstance(fkp, FKPField) else fkp
+
+    randoms = [get_randoms(fkp) for fkp in fkps_none]
+
+    def compute_fkp_normalization_z(*particles, cellsize=cellsize, split=None):
+        if split is not None:
+            particles = split_particles(*particles, seed=split)
+        reduce = 1
+        for mesh in _iter_meshes(resampler=resampler, cellsize=cellsize, compensate=False, interlacing=0):
+            reduce *= mesh
+        reduce /= mesh.sum()
+        distance = jnp.sqrt(sum(xx**2 for xx in mesh.attrs.xcoords(kind='position', sparse=True)))
+        reduce *= d2z(distance)
+        return reduce.sum()
+
+    return compute_fkp_normalization_z(*randoms, cellsize=cellsize, split=split)

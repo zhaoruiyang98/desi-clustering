@@ -1,13 +1,19 @@
 import logging
 
+import numpy as np
 import jax
+
+from tools import default_mpicomm
 
 
 logger = logging.getLogger('spectrum2')
 
 
-def prepare_jaxpower_particles(*get_data_randoms, mattrs=None, backend='mpi', **kwargs):
-    from jaxpower import get_mesh_attrs, ParticleField
+@default_mpicomm
+def prepare_jaxpower_particles(*get_data_randoms, mattrs=None, **kwargs):
+    from jaxpower.mesh import get_mesh_attrs, ParticleField, make_array_from_process_local_data
+    backend = 'mpi'
+    mpicomm = kwargs['mpicomm']
 
     all_data, all_randoms, all_shifted = [], [], []
     for _get_data_randoms in get_data_randoms:
@@ -22,14 +28,23 @@ def prepare_jaxpower_particles(*get_data_randoms, mattrs=None, backend='mpi', **
         assert len(all_shifted) == len(data), 'Give as many shifted randoms as data/randoms'
 
     # Define the mesh attributes; pass in positions only
-    mattrs = get_mesh_attrs(*[data[0] for data in all_data + all_shifted + all_randoms], check=True, **(mattrs or {}))
+    mattrs = get_mesh_attrs(*[data['POSITION'] for data in all_data + all_shifted + all_randoms], check=True, **(mattrs or {}))
     if jax.process_index() == 0:
         logger.info(f'Using mesh {mattrs}.')
 
+    def collective_arange(local_size):
+        sizes = mpicomm.allgather(local_size)
+        return sum(sizes[:mpicomm.rank]) + np.arange(local_size)
+
     all_particles = []
     for i, (data, randoms) in enumerate(zip(all_data, all_randoms)):
-        data = ParticleField(*data, attrs=mattrs, exchange=True, backend=backend, **kwargs)
-        randoms = ParticleField(*randoms, attrs=mattrs, exchange=True, backend=backend, **kwargs)
+        data = ParticleField(data['POSITION'], data['INDWEIGHT'], attrs=mattrs, exchange=True, backend=backend, **kwargs)
+        ids = collective_arange(len(randoms['POSITION']))
+        randoms = ParticleField(randoms['POSITION'], randoms['INDWEIGHT'], attrs=mattrs, exchange=True, backend=backend, **kwargs)
+        if backend == 'jax':  # first convert to JAX Array
+            sharding_mesh = mattrs.sharding_mesh
+            ids = make_array_from_process_local_data(ids, pad=-1, sharding_mesh=sharding_mesh)
+        randoms.__dict__['ids'] = randoms.exchange_direct(ids, pad=-1)  # index in the input catalog; for random split in bispectrum normalization
         if all_shifted:
             shifted = ParticleField(*shifted, attrs=mattrs, exchange=True, backend=backend, **kwargs)
         else:
@@ -53,14 +68,15 @@ def _get_jaxpower_attrs(*particles):
     return attrs
 
 
-def compute_mesh2_spectrum(*particles, cut=None, auw=None,
+def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
                            ells=(0, 2, 4), edges=None, los='firstpoint', cache=None):
 
     from jaxpower import (FKPField, compute_fkp2_normalization, compute_fkp2_shotnoise, BinMesh2SpectrumPoles, compute_mesh2_spectrum,
                           BinParticle2SpectrumPoles, BinParticle2CorrelationPoles, compute_particle2, compute_particle2_shotnoise)
 
-    attrs = _get_jaxpower_attrs(*particles)
-    mattrs = particles[0][0].attrs
+    all_particles = prepare_jaxpower_particles(*get_data_randoms, mattrs=mattrs)
+    attrs = _get_jaxpower_attrs(*all_particles)
+    mattrs = all_particles[0][0].attrs
     # Define the binner
     if cache is None: cache = {}
     bin = cache.get('bin_mesh2_spectrum', None)
@@ -69,30 +85,19 @@ def compute_mesh2_spectrum(*particles, cut=None, auw=None,
     cache.setdefault('bin_mesh2_spectrum', bin)
 
     # Computing normalization
-    all_fkp = [FKPField(data, randoms) for (data, randoms, _) in particles]
+    all_fkp = [FKPField(data, randoms) for (data, randoms, _) in all_particles]
     norm = compute_fkp2_normalization(*all_fkp, bin=bin, cellsize=10)
 
     # Computing shot noise
-    all_fkp = [FKPField(data, shifted if shifted is not None else randoms) for (data, randoms, shifted) in particles]
+    all_fkp = [FKPField(data, shifted if shifted is not None else randoms) for (data, randoms, shifted) in all_particles]
+    del all_particles
     num_shotnoise = compute_fkp2_shotnoise(*all_fkp, bin=bin)
 
     jax.block_until_ready((norm, num_shotnoise))
     if jax.process_index() == 0:
         logger.info('Normalization and shotnoise computation finished')
 
-    jitted_compute_mesh2_spectrum = jax.jit(compute_mesh2_spectrum, static_argnames=['los'], donate_argnums=[0])
-    #jitted_compute_mesh2_spectrum = compute_mesh2_spectrum
-    kw = dict(resampler='tsc', interlacing=3, compensate=True)
-    # out='real' to save memory
-    spectrum = jitted_compute_mesh2_spectrum(*[fkp.paint(**kw, out='real') for fkp in all_fkp], bin=bin, los=los)
-    spectrum = spectrum.clone(norm=norm, num_shotnoise=num_shotnoise, attrs=attrs)
-
-    results = {'raw': spectrum}
-
-    jax.block_until_ready(spectrum)
-    if jax.process_index() == 0:
-        logger.info('Mesh-based computation finished')
-
+    results = {}
     if cut is not None:
         sattrs = {'theta': (0., 0.05)}
         #pbin = BinParticle2SpectrumPoles(mattrs, edges=bin.edges, xavg=bin.xavg, sattrs=sattrs, ells=ells)
@@ -102,7 +107,7 @@ def compute_mesh2_spectrum(*particles, cut=None, auw=None,
         close = compute_particle2(*all_particles, bin=pbin, los=los)
         close = close.clone(num_shotnoise=compute_particle2_shotnoise(*all_particles, bin=pbin), norm=norm)
         close = close.to_spectrum(spectrum)
-        results['cut'] = spectrum.clone(value=spectrum.value() - close.value())
+        results['cut'] = -close.value()
 
     if auw is not None:
         from cucount.jax import WeightAttrs
@@ -113,11 +118,28 @@ def compute_mesh2_spectrum(*particles, cut=None, auw=None,
         pbin = BinParticle2SpectrumPoles(mattrs, edges=bin.edges, xavg=bin.xavg, sattrs=sattrs, wattrs=wattrs, ells=ells)
         DD = compute_particle2(*all_data, bin=pbin, los=los)
         DD = DD.clone(num_shotnoise=compute_particle2_shotnoise(*all_data, bin=pbin), norm=norm)
-        results['auw'] = spectrum.clone(value=spectrum.value() + DD.value())
+        results['auw'] = DD.value()
 
     jax.block_until_ready(results)
     if jax.process_index() == 0:
         logger.info(f'Particle-based calculation finished')
+
+    kw = dict(resampler='tsc', interlacing=3, compensate=True)
+    # out='real' to save memory
+    meshes = [fkp.paint(**kw, out='real') for fkp in all_fkp]
+    del all_fkp
+
+    jitted_compute_mesh2_spectrum = jax.jit(compute_mesh2_spectrum, static_argnames=['los'], donate_argnums=[0])
+    #jitted_compute_mesh2_spectrum = compute_mesh2_spectrum
+    spectrum = jitted_compute_mesh2_spectrum(*meshes, bin=bin, los=los)
+    spectrum = spectrum.clone(norm=norm, num_shotnoise=num_shotnoise, attrs=attrs)
+    jax.block_until_ready(spectrum)
+    if jax.process_index() == 0:
+        logger.info('Mesh-based computation finished')
+
+    for name, value in results.items():
+        results[name] = spectrum.clone(value=spectrum.value() + value)
+    results['raw'] = spectrum
 
     if len(results) == 1:
         return next(iter(results.values()))

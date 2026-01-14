@@ -25,22 +25,31 @@ def _merge_options(options1, options2):
     return options
 
 
-def _fill_fiducial_options(**kwargs):
+def fill_fiducial_options(**kwargs):
     options = {key: dict(value) for key, value in kwargs.items()}
+    mattrs = options.pop('mattrs', {})
     tracer = options['catalog']['tracer']
     tracers = tuple(tracer) if not isinstance(tracer, str) else (tracer,)
     options['catalog']['tracer'] = tracers
     if options['catalog'].get('nran', None) is None: options['catalog']['nran'] = tools.propose_fiducial('nran', tools.join_tracers(tracers))
-    # Mesh attributes
-    options['mattrs'] = tools.propose_fiducial('mattrs', tools.join_tracers(tracers)) | options.get('mattrs', {})
     recon_args = options.pop('recon', {})
     # recon for each tracer
     options['recon'] = {}
     for tracer in tracers:
         options['recon'][tracer] = recon_args.get(tracer, recon_args)
+        for _mattrs in [tools.propose_fiducial('mattrs', tools.join_tracers(tracers)), mattrs, options['recon'].get('mattrs', {})][::-1]:
+            if _mattrs:
+                options['recon']['mattrs'] = _mattrs
+                break
     for recon in ['', 'recon_']:
         for stat in ['particle2_correlation', 'mesh2_spectrum', 'mesh3_spectrum']:
-            options[f'{recon}{stat}'] = tools.propose_fiducial(stat, tools.join_tracers(tracers)) | options.get(f'{recon}{stat}', {})
+            stat = f'{recon}{stat}'
+            options[stat] = tools.propose_fiducial(stat, tools.join_tracers(tracers)) | options.get(stat, {})
+            if 'mesh' in stat:
+                for _mattrs in [tools.propose_fiducial('mattrs', tools.join_tracers(tracers)), mattrs, options[stat].get('mattrs', {})][::-1]:
+                    if _mattrs:
+                        options[f'{recon}{stat}']['mattrs'] = _mattrs
+                        break
     return options
 
 
@@ -63,51 +72,60 @@ def _expand_cut_auw_options(stat, options):
     return args
 
 
+def clone_catalog(catalog, **kwargs):
+    catalog = catalog.copy()
+    for column, value in kwargs.items():
+        catalog[column] = value
+    return catalog
+
+
+def apply_fiducial_selection_weight(catalog, stat):
+    if 'mesh3' in stat:
+        catalog = clone_catalog(catalog, INDWEIGHT=catalog['INDWEIGHT'] * catalog['NX']**(-1. / 3.))
+    return catalog
+
+
 def compute_fiducial_stats_from_options(stats, cache=None,
-                                                     get_catalog_fn=tools.get_catalog_fn,
-                                                     get_measurement_fn=tools.get_measurement_fn,
-                                                     read_clustering_rdzw=tools.read_clustering_rdzw,
-                                                     read_full_rdw=tools.read_full_rdw,
-                                                     **kwargs):
+                                        get_catalog_fn=tools.get_catalog_fn,
+                                        get_measurement_fn=tools.get_measurement_fn,
+                                        read_clustering_catalog=tools.read_clustering_catalog,
+                                        read_full_catalog=tools.read_full_catalog,
+                                        **kwargs):
 
     if isinstance(stats, str):
         stats = [stats]
 
     cache = cache or {}
-    kwargs = _fill_fiducial_options(**kwargs)
+    kwargs = fill_fiducial_options(**kwargs)
     catalog_args = kwargs['catalog']
     tracers = catalog_args['tracer']
 
     with_recon = any('recon' in stat for stat in stats)
 
-    data_positions_weights, randoms_positions_weights, local_sizes_randoms = {}, {}, {}
+    data, randoms, local_sizes_randoms = {}, {}, {}
     for tracer in tracers:
         clustering_data_fn = get_catalog_fn(kind='data', **(catalog_args | dict(tracer=tracer)))
-        data_positions_weights[tracer] = tools.get_positions_weights_from_rdzw(read_clustering_rdzw(clustering_data_fn, **catalog_args, concatenate=True))
+        data[tracer] = read_clustering_catalog(clustering_data_fn, **catalog_args, concatenate=True)
 
         all_clustering_randoms_fn = get_catalog_fn(kind='randoms', **(catalog_args | dict(tracer=tracer)))
         nran = catalog_args['nran']
         if with_recon: nran = min(nran * 2, 18)  # twice more randoms for reconstruction
-        randoms_positions_weights[tracer] = tools.get_positions_weights_from_rdzw(read_clustering_rdzw(*all_clustering_randoms_fn, **(catalog_args | dict(nran=nran)), concatenate=False))
-        local_sizes_randoms[tracer] = [len(pw[0]) for pw in randoms_positions_weights[tracer]]
-        randoms_positions_weights[tracer] = [np.concatenate([pw[i] for pw in randoms_positions_weights[tracer]], axis=0) for i in range(2)]
+        randoms[tracer] = read_clustering_catalog(*all_clustering_randoms_fn, **(catalog_args | dict(nran=nran)), concatenate=False)
+        local_sizes_randoms[tracer] = [len(pw[0]) for pw in randoms[tracer]]
+        randoms[tracer] = [np.concatenate([pw[i] for pw in randoms[tracer]], axis=0) for i in range(2)]
 
     from jaxpower import create_sharding_mesh
     with create_sharding_mesh() as sharding_mesh:
         if with_recon:
-            data_positions_weights_rec, randoms_positions_weights_rec = {}, {}
+            data_rec, randoms_rec = {}, {}
             for tracer in tracers:
+                data_rec[tracer], randoms_rec[tracer] = {}, {}
                 recon_args = kwargs['recon'][tracer]
                 # return_inverse to map jaxpower_particles -> input positions (exchange_inverse below)
-                jaxpower_particles = prepare_jaxpower_particles(lambda: (data_positions_weights[tracer], randoms_positions_weights[tracer]), mattrs=recon_args.pop('mattrs'), return_inverse=True)[0]
-                data_positions_rec, randoms_positions_rec = compute_reconstruction(*jaxpower_particles[:2], **recon_args)
-                data_positions_weights_rec[tracer] = jaxpower_particles[0].exchange_inverse(data_positions_rec), data_positions_weights[1]
-                randoms_positions_weights_rec[tracer] = jaxpower_particles[1].exchange_inverse(randoms_positions_rec), randoms_positions_weights[1]
-                del data_positions_rec, randoms_positions_rec
+                data_rec[tracer]['POSITION'], randoms_rec[tracer]['POSITION'] = compute_reconstruction(lambda: (data[tracer], randoms[tracer]), **recon_args)
                 local_sizes_randoms = local_sizes_randoms[tracer][:catalog_args['nran']]
                 sl = slice(sum(local_sizes_randoms[tracer]))
-                randoms_positions_weights[tracer] = [pw[sl] for pw in randoms_positions_weights[tracer]]
-                randoms_positions_weights_rec[tracer] = [pw[sl] for pw in randoms_positions_weights_rec[tracer]]
+                randoms[tracer] = randoms[tracer][sl]
 
         # Compute angular upweights
         if any(kw.get('auw', False) for kw in kwargs.values()):
@@ -116,7 +134,7 @@ def compute_fiducial_stats_from_options(stats, cache=None,
                 _catalog_args = (catalog_args | dict(tracer=tracer, region='ALL'))
                 _catalog_args['wntile'] = tools.compute_wntile(get_catalog_fn(kind='data', **_catalog_args))
                 full_data_fn = get_catalog_fn(kind='full_data', **_catalog_args)
-                return read_full_rdw(full_data_fn, kind='fibered', **_catalog_args), read_full_rdw(full_data_fn, kind='parent', **_catalog_args)
+                return read_full_catalog(full_data_fn, kind='fibered', **_catalog_args), read_full_catalog(full_data_fn, kind='parent', **_catalog_args)
 
             auw = compute_angular_upweights(*[functools.partial(get_data, tracer) for tracer in tracers])
             fn = get_measurement_fn(kind='angular_upweights', **catalog_args)
@@ -129,18 +147,20 @@ def compute_fiducial_stats_from_options(stats, cache=None,
             if stat in stats:
                 correlation_args = kwargs[stat]
 
-                def get_sliced(positions_weights):
+                def get_sliced(catalog):
                     sliced = []
                     start = 0
                     for size in local_sizes_randoms:
-                        sliced.append([pw[slice(start, start + size)] for pw in positions_weights])
+                        sliced.append(catalog[slice(start, start + size)])
                         start += size
                     return sliced
 
                 def get_data(tracer):
                     if recon:
-                        return (data_positions_weights_rec[tracer], get_sliced(randoms_positions_weights[tracer]), get_sliced(randoms_positions_weights_rec[tracer]))
-                    return (data_positions_weights[tracer], get_sliced(randoms_positions_weights[tracer]))
+                        return (clone_catalog(data[tracer], **data_rec[tracer]),
+                                get_sliced(clone_catalog(randoms[tracer], **randoms_rec[tracer])),
+                                get_sliced(randoms[tracer]))
+                    return (data[tracer], get_sliced(randoms[tracer]))
 
                 correlation = compute_particle2_correlation(*[functools.partial(get_data, tracer) for tracer in tracers], **correlation_args)
                 fn = get_measurement_fn(kind=stat, **catalog_args, **correlation_args)
@@ -148,25 +168,25 @@ def compute_fiducial_stats_from_options(stats, cache=None,
 
             # Prepare jax-power particles: spatial sharding
             funcs = {f'{recon}mesh2_spectrum': compute_mesh2_spectrum, f'{recon}mesh3_spectrum': compute_mesh3_spectrum}
-            mattrs = kwargs['mattrs']
-            if any(stat in funcs for stat in stats):
 
-                def get_data(tracer):
-                    if recon:
-                        return (data_positions_weights_rec[tracer], randoms_positions_weights[tracer], randoms_positions_weights_rec[tracer])
-                    return (data_positions_weights[tracer], randoms_positions_weights[tracer])
-
-                jaxpower_particles = prepare_jaxpower_particles(*[functools.partial(get_data, tracer) for tracer in tracers], mattrs=mattrs)
             for stat, func in funcs.items():
                 if stat in stats:
+
+                    def get_data(tracer):
+                        if recon:
+                            toret = (clone_catalog(data[tracer], **data_rec[tracer]),
+                                     clone_catalog(randoms[tracer], **randoms_rec[tracer]),
+                                     randoms[tracer])
+                        else:
+                            toret = (data[tracer], randoms[tracer])
+                        return tuple(apply_fiducial_selection_weight(catalog, stat=stat) for catalog in toret)
+
                     spectrum_args = kwargs[stat]
-                    spectrum = func(*jaxpower_particles, cache=cache, **spectrum_args)
+                    spectrum = func(*[functools.partial(get_data, tracer) for tracer in tracers], cache=cache, **spectrum_args)
                     if not isinstance(spectrum, dict): spectrum = {'raw': spectrum}
                     for key, kw in _expand_cut_auw_options(stat, spectrum_args).items():
                         fn = get_measurement_fn(kind=stat, **catalog_args, **kw)
                         tools.write_summary_statistics(fn, spectrum[key])
-
-        del jaxpower_particles
 
 
 def combine_fiducial_stats_from_options(stats, region_comb, regions, get_measurement_fn=tools.get_measurement_fn, **kwargs):
@@ -174,14 +194,18 @@ def combine_fiducial_stats_from_options(stats, region_comb, regions, get_measure
     if isinstance(stats, str):
         stats = [stats]
 
-    kwargs = _fill_fiducial_options(**kwargs)
+    kwargs = fill_fiducial_options(**kwargs)
     catalog_args = kwargs['catalog']
     for stat in stats:
         for kw in _expand_cut_auw_options(stat, kwargs[stat]).values():
             fns = [get_measurement_fn(kind=stat, **(catalog_args | dict(region=region)), **kw) for region in regions]
-            combined = types.sum([types.read(fn) for fn in fns])
-            fn = get_measurement_fn(kind=stat, **(catalog_args | dict(region=region_comb)), **kw)
-            tools.write_summary_statistics(fn, combined)
+            fn_comb = get_measurement_fn(kind=stat, **(catalog_args | dict(region=region_comb)), **kw)
+            exists = {os.path.exists(fn): fn for fn in fns}
+            if all(exists):
+                combined = types.sum([types.read(fn) for fn in fns])
+                tools.write_summary_statistics(fn_comb, combined)
+            else:
+                logger.info(f'Skipping {fn_comb} as {[fn for ex, fn in exists.items() if not ex]} do not exist')
 
 
 def main(**kwargs):
@@ -229,13 +253,11 @@ def main(**kwargs):
     for zrange in zranges:
         for imock in args.imock:
             catalog_args = dict(version=args.version, cat_dir=args.cat_dir, tracer=args.tracer, zrange=zrange, weight_type=args.weight_type, nran=args.nran, imock=imock)
-            options_imock = _fill_fiducial_options(catalog=catalog_args, **options)
+            options_imock = fill_fiducial_options(catalog=catalog_args, **options)
             for region in args.region:
                 _options_imock = dict(options_imock)
                 _options_imock['catalog'] = _options_imock['catalog'] | dict(region=region)
-                compute_fiducial_stats_from_options(args.stats,
-                                                                 get_measurement_fn=get_measurement_fn,
-                                                                 cache=cache, **_options_imock)
+                compute_fiducial_stats_from_options(args.stats, get_measurement_fn=get_measurement_fn, cache=cache, **_options_imock)
                 jax.experimental.multihost_utils.sync_global_devices('measurements')
             if args.combine:
                 if jax.process_index() == 0:
