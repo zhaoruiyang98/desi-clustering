@@ -42,7 +42,7 @@ def compute_mesh3_spectrum(*get_data_randoms, mattrs=None,
     meshes = [fkp.paint(**kw, out='real') for fkp in all_fkp]
     del all_fkp
 
-    jitted_compute_mesh3_spectrum = jax.jit(compute_mesh3_spectrum, static_argnames=['los'], donate_argnums=[0])
+    jitted_compute_mesh3_spectrum = jax.jit(compute_mesh3_spectrum, static_argnames=['los'])
 
     # out='real' to save memory
     spectrum = jitted_compute_mesh3_spectrum(*meshes, los=los, bin=bin)

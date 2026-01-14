@@ -7,7 +7,7 @@ import numpy as np
 import lsstypes as types
 
 import tools
-from tools import setup_logging
+from tools import Catalog, setup_logging
 from correlation2_tools import compute_angular_upweights, compute_particle2_correlation
 from spectrum2_tools import prepare_jaxpower_particles, compute_mesh2_spectrum
 from spectrum3_tools import compute_mesh3_spectrum
@@ -48,7 +48,7 @@ def fill_fiducial_options(**kwargs):
             if 'mesh' in stat:
                 for _mattrs in [tools.propose_fiducial('mattrs', tools.join_tracers(tracers)), mattrs, options[stat].get('mattrs', {})][::-1]:
                     if _mattrs:
-                        options[f'{recon}{stat}']['mattrs'] = _mattrs
+                        options[stat]['mattrs'] = _mattrs
                         break
     return options
 
@@ -111,8 +111,8 @@ def compute_fiducial_stats_from_options(stats, cache=None,
         nran = catalog_args['nran']
         if with_recon: nran = min(nran * 2, 18)  # twice more randoms for reconstruction
         randoms[tracer] = read_clustering_catalog(*all_clustering_randoms_fn, **(catalog_args | dict(nran=nran)), concatenate=False)
-        local_sizes_randoms[tracer] = [len(pw[0]) for pw in randoms[tracer]]
-        randoms[tracer] = [np.concatenate([pw[i] for pw in randoms[tracer]], axis=0) for i in range(2)]
+        local_sizes_randoms[tracer] = [len(random['POSITION']) for random in randoms[tracer]]
+        randoms[tracer] = Catalog.concatenate(randoms[tracer])
 
     from jaxpower import create_sharding_mesh
     with create_sharding_mesh() as sharding_mesh:
@@ -128,7 +128,7 @@ def compute_fiducial_stats_from_options(stats, cache=None,
                 randoms[tracer] = randoms[tracer][sl]
 
         # Compute angular upweights
-        if any(kw.get('auw', False) for kw in kwargs.values()):
+        if any(kwargs[stat].get('auw', False) for stat in stats):
 
             def get_data(tracer):
                 _catalog_args = (catalog_args | dict(tracer=tracer, region='ALL'))

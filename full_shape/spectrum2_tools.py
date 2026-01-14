@@ -22,10 +22,10 @@ def prepare_jaxpower_particles(*get_data_randoms, mattrs=None, **kwargs):
         all_data.append(data)
         all_randoms.append(randoms)
         if shifted:
-            all_shifted.append(shifted)
+            all_shifted.append(shifted[0])
 
     if all_shifted:
-        assert len(all_shifted) == len(data), 'Give as many shifted randoms as data/randoms'
+        assert len(all_shifted) == len(all_data), 'Give as many shifted randoms as data/randoms'
 
     # Define the mesh attributes; pass in positions only
     mattrs = get_mesh_attrs(*[data['POSITION'] for data in all_data + all_shifted + all_randoms], check=True, **(mattrs or {}))
@@ -106,7 +106,7 @@ def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
         all_particles = [convert_particles(fkp.particles) for fkp in all_fkp]
         close = compute_particle2(*all_particles, bin=pbin, los=los)
         close = close.clone(num_shotnoise=compute_particle2_shotnoise(*all_particles, bin=pbin), norm=norm)
-        close = close.to_spectrum(spectrum)
+        close = close.to_spectrum(bin.xavg)
         results['cut'] = -close.value()
 
     if auw is not None:
@@ -129,7 +129,7 @@ def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
     meshes = [fkp.paint(**kw, out='real') for fkp in all_fkp]
     del all_fkp
 
-    jitted_compute_mesh2_spectrum = jax.jit(compute_mesh2_spectrum, static_argnames=['los'], donate_argnums=[0])
+    jitted_compute_mesh2_spectrum = jax.jit(compute_mesh2_spectrum, static_argnames=['los'])
     #jitted_compute_mesh2_spectrum = compute_mesh2_spectrum
     spectrum = jitted_compute_mesh2_spectrum(*meshes, bin=bin, los=los)
     spectrum = spectrum.clone(norm=norm, num_shotnoise=num_shotnoise, attrs=attrs)

@@ -17,11 +17,12 @@ def compute_angular_upweights(*get_data):
     all_fibered_data, all_parent_data = [], []
 
     def get_rdw(catalog):
-        return [(catalog['RA'], catalog['DEC']), [catalog['INDWEIGHT']] + _format_bitweights(catalog.get('BITWEIGHT', None))]
+        positions = (catalog['RA'], catalog['DEC'])
+        weights = [catalog['INDWEIGHT']] + _format_bitweights(catalog['BITWEIGHT'] if 'BITWEIGHT' in catalog else None)
+        return positions, weights
 
     for _get_data in get_data:
         fibered_data, parent_data = _get_data()
-
         fibered_data = Particles(*get_rdw(fibered_data), positions_type='rd', exchange=True)
         parent_data = Particles(*get_rdw(parent_data), positions_type='rd', exchange=True)
         all_fibered_data.append(fibered_data)

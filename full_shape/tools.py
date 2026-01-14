@@ -7,7 +7,7 @@ import functools
 import numpy as np
 
 from mpi4py import MPI
-from mockfactory import Catalog, sky_to_cartesian
+from mockfactory import Catalog, sky_to_cartesian, setup_logging
 
 
 logger = logging.getLogger('tools')
@@ -224,11 +224,12 @@ def popcount(*arrays):
     for array in arrays[1:]: toret += popcount(array)
     return toret
 
+
 def _format_bitweights(bitweights):
     if bitweights is None:
         return []
     if isinstance(bitweights, (tuple, list)):
-        return bitweights
+        return list(bitweights)
     if bitweights.ndim == 2:
         return list(bitweights.T)
     return [bitweights]
@@ -349,7 +350,7 @@ def read_clustering_catalog(*fns, kind=None, zrange=None, region=None, weight_ty
         catalog = catalog[['RA', 'DEC', 'Z', 'NX']]
         catalog['INDWEIGHT'] = individual_weight
         for column in catalog: catalog[column] = catalog[column].astype('f8')
-        if bitwise_weights: catalog['BITWEIGHT'] = bitwise_weights
+        if bitwise_weights is not None: catalog['BITWEIGHT'] = bitwise_weights
         catalog = get_positions_from_rdz(catalog)
         rdzw.append(catalog)
     if concatenate:
@@ -403,8 +404,7 @@ def read_full_catalog(*fns, kind='parent', region=None, weight_type='default', n
         catalog = catalog[['RA', 'DEC']]
         catalog['INDWEIGHT'] = individual_weight
         for column in catalog: catalog[column] = catalog[column].astype('f8')
-        if bitwise_weights is not None:
-            catalog['BITWEIGHT'] = bitwise_weights
+        if bitwise_weights is not None: catalog['BITWEIGHT'] = bitwise_weights
         rdw.append(catalog)
     if concatenate:
         return Catalog.concatenate(rdw)
