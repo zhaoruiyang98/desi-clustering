@@ -179,7 +179,7 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
 
 
 def get_measurement_fn(meas_dir=Path(os.getenv('SCRATCH')) / 'measurements', version=None, kind='mesh2_spectrum', recon=None,
-                       tracer='LRG', region='NGC', zrange=(0.8, 1.1), auw=None, cut=None, weight_type='default_FKP', imock=None, extra='', ext='h5', **kwargs):
+                       tracer='LRG', region='NGC', zrange=None, auw=None, cut=None, weight_type='default_FKP', imock=None, extra='', ext='h5', **kwargs):
     if imock == '*':
         fns = [get_measurement_fn(meas_dir=meas_dir, kind=kind, version=version, recon=recon, tracer=tracer, region=region, zrange=zrange, auw=auw, cut=cut, weight_type=weight_type, imock=imock, ext=ext, **kwargs) for imock in range(1000)]
         return [fn for fn in fns if os.path.exists(fn)]
@@ -380,7 +380,9 @@ def read_clustering_catalog(*fns, kind=None, zrange=None, region=None, weight_ty
 
 
 @default_mpicomm
-def read_full_catalog(*fns, kind='parent', region=None, weight_type='default', ntmp=None, wntile=None, concatenate=True, mpicomm=None, **kwargs):
+def read_full_catalog(*fns, kind='parent_data', region=None, weight_type='default', ntmp=None, wntile=None, concatenate=True, mpicomm=None, **kwargs):
+
+    assert kind in ['parent_data', 'fibered_data', 'parent_randoms', 'fibered_randoms'], 'provide kind'
 
     exists = {os.path.exists(fn): fn for fn in fns}
     if not all(exists):
@@ -417,8 +419,9 @@ def read_full_catalog(*fns, kind='parent', region=None, weight_type='default', n
         if 'fibered' in kind and 'data' in kind:
             if ntmp is not None:
                 individual_weight /= apply_wntmp(catalog['NTILE'], ntmp)
-            bitwise_weights = catalog['BITWEIGHTS']
-            if 'bitwise' not in weight_type:
+            if 'bitwise' in weight_type:
+                bitwise_weights = catalog['BITWEIGHTS']
+            else:
                 individual_weight /= (catalog['FRACZ_TILELOCID'] * catalog['FRAC_TLOBS_TILES'])
                 bitwise_weights = None
         catalog = catalog[['RA', 'DEC']]

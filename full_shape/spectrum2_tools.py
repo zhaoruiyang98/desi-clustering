@@ -127,7 +127,7 @@ def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
         from cucount.jax import WeightAttrs
         from jaxpower.particle2 import convert_particles
         sattrs = {'theta': (0., 0.1)}
-        bitwise = None
+        bitwise = angular = None
         if with_bitweights:
             # Order of weights matters
             # fkp.data.__dict__['BITWEIGHT'] includes IIP in the first position 
@@ -137,10 +137,11 @@ def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
                 logger.info(f'Applying PIP weights {bitwise}.')
         else:
             all_data = [convert_particles(fkp.data, weights=[fkp.data.weights] * 2, exchange_weights=False, index_value=dict(individual_weight=1, negative_weight=1)) for fkp in all_fkp]
+        if auw is not None:
+            angular = dict(sep=auw.get('DD').coords('theta'), weight=auw.get('DD').value())
             if jax.process_index() == 0:
-                logger.info(f'Applying AUW weights.')
-        wattrs = WeightAttrs(bitwise=bitwise,
-                             angular=dict(sep=auw.get('DD').coords('theta'), weight=auw.get('DD').value()) if auw is not None else None)
+                logger.info(f'Applying AUW {angular}.')
+        wattrs = WeightAttrs(bitwise=bitwise, angular=angular)
         pbin = BinParticle2SpectrumPoles(mattrs, edges=bin.edges, xavg=bin.xavg, sattrs=sattrs, wattrs=wattrs, ells=ells)
         DD = compute_particle2(*all_data, bin=pbin, los=los)
         DD = DD.clone(num_shotnoise=compute_particle2_shotnoise(*all_data, bin=pbin), norm=norm)

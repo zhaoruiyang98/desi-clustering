@@ -151,11 +151,11 @@ def compute_fiducial_stats_from_options(stats, cache=None,
                 _catalog_options = catalog_options | dict(tracer=tracer, zrange=None)
                 _catalog_options['wntile'] = tools.compute_wntile(get_catalog_fn(kind='data', **_catalog_options))
                 full_data_fn = get_catalog_fn(kind='full_data', **_catalog_options)
-                return read_full_catalog(full_data_fn, kind='fibered', **_catalog_options), read_full_catalog(full_data_fn, kind='parent', **_catalog_options)
+                return read_full_catalog(full_data_fn, kind='fibered_data', **_catalog_options), read_full_catalog(full_data_fn, kind='parent_data', **_catalog_options)
 
             auw = compute_angular_upweights(*[functools.partial(get_data, tracer) for tracer in tracers])
             _catalog_options = catalog_options | dict(zrange=None)
-            fn = get_measurement_fn(kind='angular_upweights', **_catalog_options)
+            fn = get_measurement_fn(kind='particle2_angular_upweights', **_catalog_options)
             tools.write_summary_statistics(fn, auw)
             for key, kw in kwargs.items():
                 if kw.get('auw', False): kw['auw'] = auw  # update with angular upweights
