@@ -18,6 +18,16 @@ from tools import setup_logging
 from compute_fiducial_stats import compute_fiducial_stats_from_options
 
 
+def test_auw(stats=['mesh2_spectrum']):
+    meas_dir = Path(Path(os.getenv('SCRATCH')) / 'clustering-measurements-checks')
+    for tracer in ['LRG']:
+        zranges = tools.propose_fiducial('zranges', tracer)
+        for region in ['NGC', 'SGC']:
+            #catalog_options = dict(version='holi-v1-altmtl', tracer=tracer, zrange=zranges, region=region, imock=451)
+            catalog_options = dict(version='data-dr1-v1.5', tracer=tracer, zrange=zranges, region=region, weight='default_FKP', nran=1)
+            compute_fiducial_stats_from_options(stats, catalog=catalog_options, get_measurement_fn=functools.partial(tools.get_measurement_fn, meas_dir=meas_dir), mesh2_spectrum={'cut': True, 'auw': True}, particle2_correlation={'auw': True})
+
+
 def test_bitwise(stats=['mesh2_spectrum']):
     meas_dir = Path(Path(os.getenv('SCRATCH')) / 'clustering-measurements-checks')
     for tracer in ['LRG']:
@@ -48,6 +58,7 @@ if __name__ == '__main__':
     os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.9'
     jax.distributed.initialize()
     setup_logging()
-    test_bitwise(stats=['mesh2_spectrum'])
+    test_auw(stats=['mesh2_spectrum'])
+    #test_bitwise(stats=['mesh2_spectrum'])
     #test_norm()
     jax.distributed.shutdown()

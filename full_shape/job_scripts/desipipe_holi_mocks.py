@@ -22,7 +22,7 @@ import tools
 
 setup_logging()
 
-queue = Queue('holi_mocks')
+queue = Queue('holi_mocks2')
 queue.clear(kill=False)
 
 output, error = 'slurm_outputs/holi_mocks/slurm-%j.out', 'slurm_outputs/holi_mocks/slurm-%j.err'
@@ -73,6 +73,7 @@ def run_stats(tracer='LRG', version='holi-v1-altmtl', imocks=[451], meas_dir=Pat
 if __name__ == '__main__':
 
     todo = ['exists', 'slurm']
+    #todo = ['exists', 'interactive']
     #todo = ['interactive']
     #todo = ['slurm']
     imocks = np.arange(1001)

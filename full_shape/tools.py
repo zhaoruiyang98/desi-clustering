@@ -700,7 +700,11 @@ def read_full_catalog(kind, wntile=None, concatenate=True,
             clustering_data_fn = get_catalog_fn(kind='data', **kwargs)
         else:
             clustering_data_fn = wntile
-        return compute_wntile(clustering_data_fn, mpicomm=mpicomm)
+        toret = None
+        if mpicomm.rank == 0:
+            catalog = _read_catalog(clustering_data_fn, mpicomm=MPI.COMM_SELF)
+            toret = _compute_binned_weight(catalog['NTILE'], catalog['WEIGHT'] / catalog['WEIGHT_COMP'])
+        return mpicomm.bcast(toret, root=0)
 
     catalogs = [None] * len(fns)
     for ifn, fn in enumerate(fns):
@@ -712,7 +716,8 @@ def read_full_catalog(kind, wntile=None, concatenate=True,
             columns = ['RA', 'DEC', 'LOCATION_ASSIGNED', 'BITWEIGHTS', 'NTILE', 'WEIGHT_NTILE', 'FRACZ_TILELOCID', 'FRAC_TLOBS_TILES']
             columns = [column for column in columns if column in catalog.columns()]
             catalog = catalog[columns]
-            catalog.attrs['missing_power'] = {column: _compute_missing_power(catalog[column], catalog['BITWEIGHTS'], catalog['LOCATION_ASSIGNED']) for column in ['NTILE']}
+            if 'BITWEIGHTS' in catalog:
+                catalog.attrs['missing_power'] = {column: _compute_missing_power(catalog[column], catalog['BITWEIGHTS'], catalog['LOCATION_ASSIGNED']) for column in ['NTILE']}
             catalog.attrs['completeness'] = {column: _compute_binned_weight(catalog[column], catalog['FRACZ_TILELOCID'] * catalog['FRAC_TLOBS_TILES']) for column in ['NTILE']}
             if 'fibered' in kind:
                 mask = catalog['LOCATION_ASSIGNED']
@@ -729,7 +734,7 @@ def read_full_catalog(kind, wntile=None, concatenate=True,
         if 'WEIGHT_NTILE' in catalog:
             individual_weight = catalog['WEIGHT_NTILE']
         else:
-            individual_weight = apply_wntile(catalog['NTILE'], get_wntile(wntile))
+            individual_weight = get_binned_weight(catalog, {'NTILE': get_wntile(wntile)})
         bitwise_weights = None
         if 'fibered' in kind and 'data' in kind:
             if 'bitwise' in weight_type:
