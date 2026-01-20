@@ -76,14 +76,6 @@ def _expand_cut_auw_options(stat, options):
     return args
 
 
-def clone_catalog(catalog, **kwargs):
-    """Clone a catalog and update columns with given values."""
-    catalog = catalog.copy()
-    for column, value in kwargs.items():
-        catalog[column] = value
-    return catalog
-
-
 def apply_fiducial_selection_weight(catalog, stat):
     """
     Apply fiducial selection weight to the catalog based on the statistic being computed.
@@ -91,11 +83,11 @@ def apply_fiducial_selection_weight(catalog, stat):
     effective redshift comparable to that of the power spectrum (mesh2).
     """
     if 'mesh3' in stat:
-        catalog = clone_catalog(catalog, INDWEIGHT=catalog['INDWEIGHT'] * catalog['NX']**(-1. / 3.))
+        catalog = catalog.clone(INDWEIGHT=catalog['INDWEIGHT'] * catalog['NX']**(-1. / 3.))
     return catalog
 
 
-def compute_fiducial_stats_from_options(stats, cache=None,
+def compute_fiducial_stats_from_options(stats, analysis='full_shape', cache=None,
                                         get_measurement_fn=tools.get_measurement_fn,
                                         get_catalog_fn=None,
                                         read_clustering_catalog=tools.read_clustering_catalog,
@@ -108,6 +100,8 @@ def compute_fiducial_stats_from_options(stats, cache=None,
     ----------
     stats : str or list of str
         Summary statistics to compute.
+    analysis : str, optional
+        Type of analysis, 'full_shape' or 'png_local', to set fiducial options.
     cache : dict, optional
         Cache to store intermediate results (binning class and parent/reference random catalog).
         See :func:`spectrum2_tools.compute_mesh2_spectrum`, :func:`spectrum3_tools.compute_mesh3_spectrum`,
@@ -128,7 +122,7 @@ def compute_fiducial_stats_from_options(stats, cache=None,
         stats = [stats]
 
     cache = cache or {}
-    kwargs = fill_fiducial_options(kwargs)
+    kwargs = fill_fiducial_options(kwargs, analysis=analysis)
     catalog_options = kwargs['catalog']
     tracers = catalog_options['tracer']
     zranges = catalog_options['zrange']
@@ -169,7 +163,7 @@ def compute_fiducial_stats_from_options(stats, cache=None,
                 for random in randoms[tracer]:
                     size = len(random['POSITION'])
                     random['POSITION_REC'] = randoms_rec_positions[start:start + size]
-                    start += sizeget_catalog_fn
+                    start += size
                 randoms[tracer] = randoms[tracer][:catalog_options['nran']]  # keep only relevant random files
 
         def get_sliced(catalog, sizes):
@@ -209,7 +203,7 @@ def compute_fiducial_stats_from_options(stats, cache=None,
             zcatalog_options = catalog_options | dict(zrange=zrange)
 
             def get_catalog_recon(catalog):
-                return clone_catalog(catalog, POSITION=catalog['POSITION_REC'])
+                return catalog.clone(POSITION=catalog['POSITION_REC'])
 
             for recon in ['', 'recon_']:
                 stat = f'{recon}particle2_correlation'
@@ -344,11 +338,12 @@ def main(**kwargs):
         catalog_options = dict(version=args.version, cat_dir=args.cat_dir, tracer=args.tracer, zrange=zranges,
                                weight=args.weight, nran=args.nran, imock=imock)
         options_imock = fill_fiducial_options(dict(catalog=catalog_options) | options, analysis=args.analysis)
+
         for region in args.region:
             _options_imock = dict(options_imock)
             _options_imock['catalog'] = _options_imock['catalog'] | dict(region=region)
             if args.expand_randoms:
-                _options_imock['expand_randoms'] = {'parent_randoms_fn': get_catalog_fn(kind='randoms', version=args.expand_randoms, cat_dir=args.cat_dir, tracer=args.tracer, region=region)}
+                _options_imock['catalog']['expand'] = {'parent_randoms_fn': get_catalog_fn(kind='parent_randoms', version=args.expand_randoms, cat_dir=args.cat_dir, tracer=args.tracer, region=region, nran=max(value['nran'] for value in _options_imock['recon'].values()))}
             compute_fiducial_stats_from_options(args.stats, get_catalog_fn=get_catalog_fn, get_measurement_fn=get_measurement_fn, cache=cache, **_options_imock)
             jax.experimental.multihost_utils.sync_global_devices('measurements')
         if args.combine and jax.process_index() == 0:

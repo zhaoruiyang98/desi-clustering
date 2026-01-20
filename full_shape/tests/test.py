@@ -23,8 +23,8 @@ def test_auw(stats=['mesh2_spectrum']):
     for tracer in ['LRG']:
         zranges = tools.propose_fiducial('zranges', tracer)
         for region in ['NGC', 'SGC']:
-            #catalog_options = dict(version='holi-v1-altmtl', tracer=tracer, zrange=zranges, region=region, imock=451)
-            catalog_options = dict(version='data-dr1-v1.5', tracer=tracer, zrange=zranges, region=region, weight='default_FKP', nran=1)
+            catalog_options = dict(version='holi-v1-altmtl', tracer=tracer, zrange=zranges, region=region, imock=451)
+            #catalog_options = dict(version='data-dr1-v1.5', tracer=tracer, zrange=zranges, region=region, weight='default_FKP', nran=1)
             compute_fiducial_stats_from_options(stats, catalog=catalog_options, get_measurement_fn=functools.partial(tools.get_measurement_fn, meas_dir=meas_dir), mesh2_spectrum={'cut': True, 'auw': True}, particle2_correlation={'auw': True})
 
 
@@ -36,6 +36,31 @@ def test_bitwise(stats=['mesh2_spectrum']):
             #catalog_options = dict(version='holi-v1-altmtl', tracer=tracer, zrange=zranges, region=region, imock=451)
             catalog_options = dict(version='data-dr1-v1.5', tracer=tracer, zrange=zranges, region=region, weight='default_FKP_bitwise', nran=1)
             compute_fiducial_stats_from_options(stats, catalog=catalog_options, get_measurement_fn=functools.partial(tools.get_measurement_fn, meas_dir=meas_dir), mesh2_spectrum={'cut': True, 'auw': True}, particle2_correlation={'auw': True})
+
+
+def test_expand_randoms(stat='mesh2_spectrum'):
+    meas_dir = Path(Path(os.getenv('SCRATCH')) / 'clustering-measurements-checks')
+    for tracer in ['LRG']:
+        zrange = tools.propose_fiducial('zranges', tracer)[0]
+        for region in ['NGC', 'SGC'][:1]:
+            catalog_options = dict(version='holi-v1-altmtl', tracer=tracer, zrange=zrange, region=region, imock=451, nran=2)
+            catalog_options.update(expand={'parent_randoms_fn': tools.get_catalog_fn(kind='parent_randoms', version='data-dr2-v2', tracer=tracer, nran=catalog_options['nran'])})
+            #catalog_options.update(expand={'parent_randoms_fn': tools.get_catalog_fn(kind='randoms', version='holi-v1-altmtl', tracer=tracer, region=region, nran=catalog_options['nran'], imock=catalog_options['imock'])})
+            compute_fiducial_stats_from_options(stat, catalog=catalog_options, get_measurement_fn=functools.partial(tools.get_measurement_fn, meas_dir=meas_dir), mesh2_spectrum={}, particle2_correlation={})
+            fn = tools.get_measurement_fn(kind=stat, meas_dir=meas_dir, **catalog_options)
+            if jax.process_index() == 0:
+                spectrum = types.read(fn)
+                assert np.allclose(np.mean(spectrum.value()), 4749.380686357093)
+
+
+def test_optimal_weights(stats=['mesh2_spectrum']):
+    meas_dir = Path(Path(os.getenv('SCRATCH')) / 'clustering-measurements-checks')
+    for tracer in ['LRG']:
+        zranges = tools.propose_fiducial('zranges', tracer)
+        for region in ['NGC', 'SGC']:
+            #catalog_options = dict(version='holi-v1-altmtl', tracer=tracer, zrange=zranges, region=region, imock=451)
+            catalog_options = dict(version='data-dr1-v1.5', tracer=tracer, zrange=zranges, region=region, weight='default_FKP', nran=1)
+            compute_fiducial_stats_from_options(stats, catalog=catalog_options, get_measurement_fn=functools.partial(tools.get_measurement_fn, meas_dir=meas_dir), mesh2_spectrum={}, particle2_correlation={}, analysis='png_local')
 
 
 def test_norm():
@@ -58,7 +83,10 @@ if __name__ == '__main__':
     os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.9'
     jax.distributed.initialize()
     setup_logging()
-    test_auw(stats=['mesh2_spectrum'])
+    #test_auw(stats=['mesh2_spectrum'])
     #test_bitwise(stats=['mesh2_spectrum'])
+    #test_expand_randoms()
+    #test_expand_randoms(stat='recon_particle2_correlation')
+    #test_optimal_weights()
     #test_norm()
     jax.distributed.shutdown()

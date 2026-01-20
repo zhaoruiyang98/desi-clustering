@@ -26,7 +26,7 @@ CODE=../compute_fiducial_stats.py
 echo $MEAS_DIR
 
 JOB_FLAGS="-N 1 -n 4"
-COMMON_FLAGS="--stats mesh2_spectrum --region NGC SGC --imock $imock --version $VERSION --meas_dir $MEAS_DIR --combine"
+COMMON_FLAGS="--stats mesh2_spectrum --region NGC SGC --imock $imock --version $VERSION --meas_dir $MEAS_DIR --expand_randoms data-dr2-v2 --combine"
 
 LRG_FLAGS="--tracer LRG --zrange 0.4 0.6 0.6 0.8 0.8 1.1 --weight default_FKP"
 ELG_FLAGS="--tracer ELG_LOPnotqso --zrange 0.8 1.1 1.1 1.6 --weight default_FKP"

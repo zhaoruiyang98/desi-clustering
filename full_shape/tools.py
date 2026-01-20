@@ -129,9 +129,56 @@ def select_region(ra, dec, region=None):
     raise ValueError('unknown region {}'.format(region))
 
 
-def compute_fiducial_png_weights(ell, catalog):
+def _make_tuple(item, n=None):
+    if not isinstance(item, (list, tuple)):
+        item = (item,)
+    item = tuple(item)
+    if n is not None:
+        item = item + (item[-1],) * (n - len(item))
+    return item
+
+
+def compute_fiducial_png_weights(ell, catalog, tracer='LRG', p=1.):
     """Return total optimal weights for local PNG analysis."""
-    return catalog['INDWEIGHT'] * factor_png
+    from jax import numpy as jnp
+    from cosmoprimo.fiducial import DESI
+    from cosmoprimo.utils import Interpolator1D
+
+    def bias(z, tracer='QSO'):
+        """Bias model for the different DESI tracer (measured from DR2 data (loa/v2))."""
+        params = {'BGS_BRIGHT-21.35': (0.60646037, 0.52389492),
+                  'LRG': (0.23553567, 1.3458994),
+                  'ELG_LOPnotqso': (0.15066781, 0.59463735),
+                  'ELGnotqso': (0.15487521, 0.59464828),
+                  'ELG': (0.15487521, 0.59464828),
+                  'QSO': (0.25207547, 0.71020952)}
+        params.update({f'{key}_zcmb': value for key, value in params.items()})
+
+        if tracer in params:
+            alpha, beta = params[tracer]
+        else:
+            raise ValueError(f'Bias for {tracer} is not ready!')
+        return alpha * (1 + z)**2 + beta
+
+    cosmo = DESI()
+    zmax, nz = 100., 512
+    zgrid = 1. / np.geomspace(1. / (1. + zmax), 1., nz)[::-1] - 1.
+    growth_factor = Interpolator1D(zgrid, jnp.array(cosmo.growth_factor(zgrid)), k=3)
+    growth_rate = Interpolator1D(zgrid, jnp.array(cosmo.growth_rate(zgrid)), k=3)
+
+    tracers = _make_tuple(tracer, n=2)
+    catalogs = _make_tuple(catalog, n=2)
+    ps = _make_tuple(p, n=2)
+
+    def _get_weights(catalogs, tracers, ps):
+        wtilde = bias(catalogs[0]['Z'], tracer=tracers[0]) - ps[0]
+        w0 = growth_factor(catalogs[0]['Z']) * (bias(catalogs[1]['Z'], tracer=tracers[1]) + growth_rate(catalogs[1]['Z']) / 3)
+        w2 = 2 / 3 * growth_factor(catalogs[1]['Z']) * growth_rate(catalogs[1]['Z'])
+        return catalogs[0]['INDWEIGHT'] * wtilde, catalogs[1]['INDWEIGHT'] * {0: w0, 2: w2}[ell]
+
+    yield _get_weights(catalogs, tracers, ps)
+    if tracers[1] != tracers[0]:
+        yield _get_weights(catalogs[::-1], tracers[::-1], ps[::-1])
 
 
 def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
@@ -161,6 +208,8 @@ def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
         'ELG': {'zranges': [(0.8, 1.1), (1.1, 1.6)], 'nran': 15, 'recon': {'bias': 1.2, 'smoothing_radius': 15., 'zrange': (0.8, 1.6)}},
         'QSO': {'zranges': [(0.8, 2.1)], 'nran': 4, 'recon': {'bias': 2.1, 'smoothing_radius': 30., 'zrange': (0.8, 2.1)}}
     }
+    tracers = _make_tuple(tracer)
+    tracer = join_tracers(tracers)
     tracer = get_simple_tracer(tracer)
     propose_fiducial = base | propose_fiducial[tracer]
     if 'png' in analysis:
@@ -172,7 +221,7 @@ def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
     for stat in ['mesh2_spectrum', 'mesh3_spectrum']:
         propose_fiducial[stat]['mattrs'] = {'meshsize': propose_meshsizes[tracer], 'cellsize': propose_cellsize}
     if 'png' in analysis:
-        propose_fiducial['mesh2_spectrum'].update(ells=(0, 2), optimal_weights=compute_fiducial_png_weights)
+        propose_fiducial['mesh2_spectrum'].update(ells=(0, 2), optimal_weights=functools.partial(compute_fiducial_png_weights, tracer=tracers))
     else:
         propose_fiducial['mesh2_spectrum'].update(ells=(0, 2, 4))
         propose_fiducial['mesh3_spectrum'].update(ells=[(0, 0, 0), (2, 0, 2)], basis='sugiyama-diagonal')
@@ -235,6 +284,9 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
             ext = 'fits'
         elif version == 'data-dr2-v2':
             cat_dir = desi_dir / f'survey/catalogs/DA2/LSS/loa-v1/LSScats/v2'
+            if kind == 'parent_randoms':
+                program = 'bright' if 'BGS' in tracer else 'dark'
+                return [cat_dir / f'{program}_{iran}_full_noveto.ran.{ext}' for iran in range(nran)]
             if 'bitwise' in weight:
                 data_dir = cat_dir / 'PIP'
             else:
@@ -375,7 +427,7 @@ def checks_if_exists_and_readable(get_fn, test_if_readable=True, **kwargs):
         toret[0].append(fn)
         for name in names: toret[1][name].append(kwargs[name])
         if exc is not None: toret[2].append(exc)
-    
+
     for values in itertools.product(*values):
         fn_kwargs = dict(zip(names, values))
         fn = get_fn(**fn_kwargs)
@@ -527,7 +579,7 @@ def expand_randoms(randoms, parent_randoms, data, from_randoms=('RA', 'DEC'), fr
     randoms = randoms[randoms_index]
     for column in from_randoms:
         if column != 'TARGETID':
-            randoms[column] = parent_randoms[column]
+            randoms[column] = parent_randoms[column][parent_index]
 
     if isinstance(data, (list, tuple)):  # NGC + SGC
         data = Catalog.concatenate([dd[list(from_data) + ['TARGETID']] for dd in data])
@@ -538,7 +590,7 @@ def expand_randoms(randoms, parent_randoms, data, from_randoms=('RA', 'DEC'), fr
     if data['TARGETID_DATA'].max() < int(1e9):  # faster method
         lookup = np.arange(1 + data['TARGETID_DATA'].max())
         lookup[data['TARGETID_DATA']] = np.arange(len(data))
-        index = lookup[data['TARGETID_DATA']]
+        index = lookup[randoms['TARGETID_DATA']]
     else:
         sorted_index = np.argsort(data['TARGETID_DATA'])
         index_in_sorted = np.searchsorted(data['TARGETID_DATA'], randoms['TARGETID_DATA'], sorter=sorted_index)
@@ -593,17 +645,28 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
         raise IOError(f'Catalogs {[fn for ex, fn in exists.items() if not ex]} do not exist!')
 
     if kind == 'randoms' and isinstance(expand, dict):
-        from_data = expand.get('from_data', ['Z', 'WEIGHT_FKP', 'FRAC_TLOBS_TILES', 'NTILE'])
+        from_data = expand.get('from_data', ['Z'])
         from_randoms = expand.get('from_randoms', ['RA', 'DEC'])
         parent_randoms_fn = expand['parent_randoms_fn']
-        if parent_randoms_fn not in expand:
-            expand[parent_randoms_fn] = _read_catalog(parent_randoms_fn, mpicomm=MPI.COMM_SELF)
-        parent_randoms = expand[parent_randoms_fn]
+        if not isinstance(parent_randoms_fn, (tuple, list)):
+            parent_randoms_fn = [parent_randoms_fn]
+        if mpicomm.rank == 0:
+            logger.info('Expanding randoms')
+        parent_randoms = []
+        for ifn, fn in enumerate(parent_randoms_fn):
+            if fn not in expand:
+                irank = ifn % mpicomm.size
+                expand[fn] = _read_catalog(fn, mpicomm=MPI.COMM_SELF) if mpicomm.rank == irank else None
+            parent_randoms.append(expand[fn])
         data_fn = expand.get('data_fn', None)
         if data_fn is None:
             data_fn = [get_catalog_fn(kind='data', **(kwargs | dict(region=region))) for region in ['NGC', 'SGC']]
         data = _read_catalog(data_fn, mpicomm=MPI.COMM_SELF)
-        expand = functools.partial(expand_randoms, parent_randoms=parent_randoms, data=data, from_randoms=from_randoms, from_data=from_data)
+
+        def expand(catalog, ifn):
+            return expand_randoms(catalog, parent_randoms=parent_randoms[ifn], data=data, from_randoms=from_randoms, from_data=from_data)
+    else:
+        expand = None
 
     catalogs = [None] * len(fns)
     for ifn, fn in enumerate(fns):
@@ -612,7 +675,7 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
         if mpicomm.rank == irank:  # Faster to read catalogs from one rank
             catalog = _read_catalog(fn, mpicomm=MPI.COMM_SELF)
             if expand is not None:
-                catalog = expand(catalog, *expand)
+                catalog = expand(catalog, ifn)
             columns = ['RA', 'DEC', 'Z', 'WEIGHT', 'WEIGHT_COMP', 'WEIGHT_FKP', 'BITWEIGHTS', 'FRAC_TLOBS_TILES', 'NTILE', 'NX', 'TARGETID']
             columns = [column for column in columns if column in catalog.columns()]
             catalog = catalog[columns]
