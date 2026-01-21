@@ -142,7 +142,7 @@ def compute_fiducial_stats_from_options(stats, analysis='full_shape', cache=None
         _catalog_options['tracer'] = tracer
         if any(name in catalog_options.get('weight', '') for name in ['bitwise', 'compntile']):
             # sets NTILE-MISSING-POWER (missing_power) and per-tile completeness (completeness)
-            _catalog_options['binned_weight'] = read_full_catalog(kind='parent_data', **_catalog_options).attrs
+            _catalog_options['binned_weight'] = read_full_catalog(kind='parent_data', **_catalog_options, attrs_only=True)
 
         data[tracer] = read_clustering_catalog(kind='data', **_catalog_options, concatenate=True)
         if with_recon:

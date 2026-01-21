@@ -305,6 +305,7 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
                 return cat_dir / f'{tracer}_complete_{region}_clustering.dat.h5'
             if kind == 'randoms':
                 return [cat_dir / f'{tracer}_complete_{region}_{iran:d}_clustering.ran.h5' for iran in range(nran)]
+            ext = 'fits' if 'full' in kind else 'h5'
         elif version == 'holi-v1-altmtl':
             cat_dir = desi_dir / f'mocks/cai/LSS/DA2/mocks/holi_v1/altmtl{imock:d}/loa-v1/mock{imock:d}/LSScats'
             ext = 'fits' if 'full' in kind else 'h5'
@@ -724,7 +725,7 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
 
 @default_mpicomm
 def read_full_catalog(kind, wntile=None, concatenate=True,
-                     get_catalog_fn=get_catalog_fn, mpicomm=None, **kwargs):
+                     get_catalog_fn=get_catalog_fn, mpicomm=None, attrs_only=False, **kwargs):
     """
     Read full data or randoms catalog with given parameters.
 
@@ -756,7 +757,7 @@ def read_full_catalog(kind, wntile=None, concatenate=True,
 
     exists = {os.path.exists(fn): fn for fn in fns}
     if not all(exists):
-        raise IOError('Catalogs {[fn for ex, fn in exists.items() if not ex]} do not exist!')
+        raise IOError(f'Catalogs {[fn for ex, fn in exists.items() if not ex]} do not exist!')
 
     def get_wntile(wntile):
         if wntile is None:
@@ -789,6 +790,13 @@ def read_full_catalog(kind, wntile=None, concatenate=True,
                 mask = select_region(catalog['RA'], catalog['DEC'], region)
                 catalog = catalog[mask]
             catalogs[ifn] = (irank, catalog)
+
+    if attrs_only:
+        for irank, catalog in catalogs:
+            attrs = catalog.attrs if mpicomm.rank == irank else None
+            if mpicomm.size > 1:
+                attrs = mpicomm.bcast(catalog.attrs if mpicomm.rank == irank else None, root=irank)
+            return attrs
 
     rdw = []
     for irank, catalog in catalogs:

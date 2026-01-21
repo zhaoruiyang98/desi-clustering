@@ -32,7 +32,7 @@ environ = Environment('nersc-cosmodesi') #, command='module swap pyrecon/main py
 tm = TaskManager(queue=queue, environ=environ)
 tm = tm.clone(scheduler=dict(max_workers=25), provider=dict(provider='nersc', time='01:30:00',
                             mpiprocs_per_worker=4, output=output, error=error, stop_after=1, constraint='gpu'))
-tm80 = tm.clone(provider=dict(provider='nersc', time='01:30:00',
+tm80 = tm.clone(provider=dict(provider='nersc', time='02:00:00',
                             mpiprocs_per_worker=4, output=output, error=error, stop_after=1, constraint='gpu&hbm80g'))
 
 
@@ -85,7 +85,13 @@ if __name__ == '__main__':
         if 'exists' in todo:
             exists, missing = tools.checks_if_exists_and_readable(get_fn=functools.partial(tools.get_catalog_fn, tracer=tracer, region='NGC', version=version), test_if_readable=False, imock=list(range(1001)))[:2]
             imocks = exists[1]['imock']
-            batch_imocks = np.array_split(imocks, len(imocks) // 10)
+            rerun = []
+            for zrange in tools.propose_fiducial('zranges', tracer):
+                for kind in ['mesh2_spectrum', 'mesh3_spectrum']:
+                    rexists, missing, unreadable = tools.checks_if_exists_and_readable(get_fn=functools.partial(tools.get_measurement_fn, kind=kind, meas_dir=meas_dir, tracer=tracer, region='GCcomb', zrange=zrange, version=version), test_if_readable=True, imock=list(range(1001)))
+                    rerun += [imock for imock in imocks if (imock in unreadable[1]['imock']) or (imock not in rexists[1]['imock'])]
+            imocks = sorted(set(rerun))
+            batch_imocks = np.array_split(imocks, len(imocks) // 10) if len(imocks) else []
         for _imocks in batch_imocks:
             if 'interactive' in todo:
                 run_stats(tracer, version=version, imocks=_imocks, meas_dir=meas_dir, stats=['mesh2_spectrum'])
