@@ -22,7 +22,8 @@ def test_stats_fn(stats=['mesh2_spectrum']):
             fn1 = tools.get_stats_fn(kind=stat, **catalog_options, **kw)
             fn2 = tools.get_stats_fn(kind=stat, catalog=catalog_options, **kw)
             assert fn2 == fn1, f'{fn2} != {fn1}'
-    catalog_options = dict(version='holi-v1-altmtl', tracer=('LRG', 'ELG'), zrange=(0.4, 0.5), region='NGC', weight='default_FKP', imock=451)
+
+    catalog_options = dict(version='holi-v1-altmtl', tracer=('LRG', 'ELG'), zrange=((0.4, 0.5), (0.4, 0.5)), region='NGC', weight='default_FKP', imock=451)
     for stat in stats:
         for kw in [{'auw': True}, {'cut': True}]:
             fn1 = tools.get_stats_fn(kind=stat, **catalog_options, **kw)
@@ -30,7 +31,8 @@ def test_stats_fn(stats=['mesh2_spectrum']):
             assert fn2 == fn1, f'{fn2} != {fn1}'
             _catalog_options = dict(catalog_options)
             _catalog_options.pop('tracer')
-            fn2 = tools.get_stats_fn(kind=stat, catalog={'LRG': _catalog_options, 'ELG': _catalog_options}, **kw)
+            zrange = _catalog_options.pop('zrange')
+            fn2 = tools.get_stats_fn(kind=stat, catalog={'LRG': _catalog_options | dict(zrange=zrange[0]), 'ELG': _catalog_options | dict(zrange=zrange[1])}, **kw)
             assert fn2 == fn1, f'{fn2} != {fn1}'
 
 
@@ -147,7 +149,7 @@ def test_norm():
 if __name__ == '__main__':
 
     os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.9'
-    jax.distributed.initialize()
+    #jax.distributed.initialize()
     setup_logging()
     test_stats_fn()
     test_auw(stats=['mesh2_spectrum'])
@@ -159,4 +161,4 @@ if __name__ == '__main__':
     #test_spectrum3()
     test_norm()
     test_recon()
-    jax.distributed.shutdown()
+    #jax.distributed.shutdown()

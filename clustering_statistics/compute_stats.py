@@ -294,12 +294,12 @@ def combine_stats_from_options(stats, region_comb, regions, get_stats_fn=tools.g
             mesh3_spectrum = dict(basis='sugiyama-diagonal', ells=[(0, 0, 0)], mattrs=dict(boxsize=7000., cellsize=10.))  # all arguments for compute_mesh3_spectrum
     """
     options = fill_fiducial_options(kwargs)
-    regions = list(regions) + [region_comb]
+    regions = list(regions)
     all_fns = {}
-    for region in regions:
+    for region in regions + [region_comb]:
         kwargs = dict(options)
         kwargs['catalog'] = {tracer: options['catalog'][tracer] | dict(region=region) for tracer in options['catalog']}
-        all_fns[region] = list_stats(stats, get_stats_fn=tools.get_stats_fn, **kwargs)
+        all_fns[region] = list_stats(stats, get_stats_fn=get_stats_fn, **kwargs)
 
     stats = next(iter(all_fns.values())).keys()
     for stat in stats:

@@ -251,7 +251,14 @@ def _unzip_catalog_options(catalog):
     """From a catalog dictionary with nran, zrange, ..., tracer, return {tracer: {nran:..., zrange: ...}}"""
     if 'tracer' in catalog:
         tracers = _make_tuple(catalog['tracer'])
-        toret = {tracer: dict(catalog) | dict(tracer=tracer) for tracer in tracers}
+        toret = {}
+        for itracer, tracer in enumerate(tracers):
+            toret[tracer] = dict(catalog) | dict(tracer=tracer)
+            for key, value in list(toret[tracer].items()):
+                if key == 'zrange':
+                    toret[tracer][key] = value[itracer] if isinstance(value, tuple) and np.ndim(value[0]) else value
+                else:
+                    toret[tracer][key] = value[itracer] if isinstance(value, tuple) else value
     else:
         toret = dict(catalog)
     return toret
@@ -261,12 +268,14 @@ def _zip_catalog_options(catalog, squeeze=True):
     """From {tracer: {nran:..., zrange: ...}}, return {tracer: tuple or single tracer if same, nran: tuple or single number if same}"""
     tracers = tuple(catalog.keys())
     toret = {key: [] for tracer in tracers for key in catalog[tracer]}
+    num = {key: 0 for tracer in tracers for key in catalog[tracer]}
     for tracer in tracers:
         for key in toret:
             value = catalog[tracer].get(key, None)
             if value not in toret[key]:
                 toret[key].append(value)
-    toret = {key: tuple(value) if len(value) > 1 or not squeeze else value[0] for key, value in toret.items()}
+                num[key] += 1
+    toret = {key: tuple(value) if num[key] > 1 or not squeeze else value[0] for key, value in toret.items()}
     toret['tracer'] = tracers
     return toret
 

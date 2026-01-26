@@ -51,24 +51,50 @@ def run_stats(tracer='LRG', version='abacus-2ndgen-complete', imocks=[0], stats_
     setup_logging()
     cache = {}
     zranges = tools.propose_fiducial('zranges', tracer)
+    get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
     for imock in imocks:
         regions = ['NGC', 'SGC']
         for region in regions:
             options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, imock=imock), mesh2_spectrum={}, window_mesh3_spectrum={'buffer_size': 5})
             options = fill_fiducial_options(options)
-            compute_stats_from_options(stats, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), cache=cache, **options)
+            #compute_stats_from_options(stats, get_stats_fn=get_stats_fn, cache=cache, **options)
         jax.experimental.multihost_utils.sync_global_devices('measurements')
         for region_comb, regions in tools.possible_combine_regions(regions).items():
-            combine_stats_from_options(stats, region_comb, regions, get_stats_fn=functools.partial(tools.get_stats_fn, stats_dir=stats_dir), **options)
+            combine_stats_from_options(stats, region_comb, regions, get_stats_fn=get_stats_fn, **options)
+    #jax.distributed.shutdown()
+
+
+def run_stats(tracer='LRG', version='abacus-2ndgen-complete', imocks=[0], stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', stats=['mesh2_spectrum']):
+    # Everything inside this function will be executed on the compute nodes;
+    # This function must be self-contained; and cannot rely on imports from the outer scope.
+    import os
+    import sys
+    import functools
+    from pathlib import Path
+    import jax
+    from clustering_statistics import tools, setup_logging, compute_stats_from_options, combine_stats_from_options, fill_fiducial_options
+
+    setup_logging()
+    cache = {}
+    zranges = tools.propose_fiducial('zranges', tracer)
+    get_stats_fn = functools.partial(tools.get_stats_fn, stats_dir=stats_dir)
+    for imock in imocks:
+        regions = ['NGC', 'SGC']
+        for region in regions:
+            options = dict(catalog=dict(version=version, tracer=tracer, zrange=zranges, region=region, imock=imock), mesh2_spectrum={}, window_mesh3_spectrum={'buffer_size': 5})
+            options = fill_fiducial_options(options)
+            #compute_stats_from_options(stats, get_stats_fn=get_stats_fn, cache=cache, **options)
+        for region_comb, regions in tools.possible_combine_regions(regions).items():
+            combine_stats_from_options(stats, region_comb, regions, get_stats_fn=get_stats_fn, **options)
     #jax.distributed.shutdown()
 
 
 if __name__ == '__main__':
 
     mode = 'interactive'
-    #stats = ['mesh2_spectrum']
+    stats = ['mesh2_spectrum', 'mesh3_spectrum']
     #stats = ['window_mesh2_spectrum']
-    stats = ['window_mesh3_spectrum']
+    #stats = ['window_mesh3_spectrum']
     imocks = np.arange(25)
 
     stats_dir = Path('/global/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/desipipe')
