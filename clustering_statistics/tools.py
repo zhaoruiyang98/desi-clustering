@@ -991,11 +991,13 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
             elif kind == 'randoms':
                 individual_weight = catalog['WEIGHT'] * get_binned_weight(catalog, binned_weight['missing_power'])
         if 'FKP' in weight_type.upper():
+            if mpicomm.rank == 0: logger.info('Multiplying individual weights by WEIGHT_FKP')
             if FKP_P0 is not None:
                 catalog['WEIGHT_FKP'] = 1. / (1. + catalog['NX'] * FKP_P0)
             individual_weight *= catalog['WEIGHT_FKP']
         if 'noimsys' in weight_type:
             # this assumes that the WEIGHT column contains WEIGHT_SYS
+            if mpicomm.rank == 0: logger.info('Dividing individual weights by WEIGHT_SYS')
             individual_weight /= catalog['WEIGHT_SYS']
         if 'comp' in weight_type:
             individual_weight *= get_binned_weight(catalog, binned_weight['completeness'])
