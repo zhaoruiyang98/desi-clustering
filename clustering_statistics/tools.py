@@ -262,27 +262,33 @@ def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
     params : dict
         Dictionary of proposed fiducial parameters for the specified statistic kind and tracer.
     """
-    base = {'catalog': {'weight': 'default_FKP'}, 'particle2_correlation': {}, 'mesh2_spectrum': {}, 'mesh3_spectrum': {}}
+    base = {'catalog': {}, 'particle2_correlation': {}, 'mesh2_spectrum': {}, 'mesh3_spectrum': {}}
     propose_fiducial = {
-        'BGS': {'zranges': [(0.1, 0.4)], 'nran': 3, 'recon': {'bias': 1.5, 'smoothing_radius': 15., 'zrange': (0.1, 0.4)}},
-        'LRG+ELG': {'zranges': [(0.8, 1.1)], 'nran': 13, 'recon': {'bias': 1.6, 'smoothing_radius': 15.}, 'zrange': (0.8, 1.1)},
-        'LRG': {'zranges': [(0.4, 0.6), (0.6, 0.8), (0.8, 1.1)], 'nran': 10, 'recon': {'bias': 2.0, 'smoothing_radius': 15., 'zrange': (0.4, 1.1)}},
-        'ELG': {'zranges': [(0.8, 1.1), (1.1, 1.6)], 'nran': 15, 'recon': {'bias': 1.2, 'smoothing_radius': 15., 'zrange': (0.8, 1.6)}},
-        'QSO': {'zranges': [(0.8, 2.1)], 'nran': 4, 'recon': {'bias': 2.1, 'smoothing_radius': 30., 'zrange': (0.8, 2.1)}}
+        'BGS': {'nran': 3, 'recon': {'bias': 1.5, 'smoothing_radius': 15., 'zrange': (0.1, 0.4)}},
+        'LRG+ELG': {'nran': 13, 'recon': {'bias': 1.6, 'smoothing_radius': 15.}, 'zrange': (0.8, 1.1)},
+        'LRG': {'nran': 10, 'recon': {'bias': 2.0, 'smoothing_radius': 15., 'zrange': (0.4, 1.1)}},
+        'ELG': {'nran': 15, 'recon': {'bias': 1.2, 'smoothing_radius': 15., 'zrange': (0.8, 1.6)}},
+        'QSO': {'nran': 4, 'recon': {'bias': 2.1, 'smoothing_radius': 30., 'zrange': (0.8, 2.1)}}
     }
     tracers = _make_tuple(tracer)
     tracer = join_tracers(tracers)
     tracer = get_simple_tracer(tracer)
     propose_fiducial = base | propose_fiducial[tracer]
     if 'png' in analysis:
+        propose_weight = 'default-oqe' # use OQE weights by default
+        propose_zranges = {'BGS': [(0.1, 0.4)], 'LRG': [(0.4, 1.1)], 'ELG': [(0.8, 1.6)], 'LRG+ELG': [(0.8, 1.1)], 'QSO': [(0.8, 3.5)]}
         propose_FKP_P0 = {'LRG': 5e4, 'ELG': 2e4, 'QSO': 3e4}
         propose_meshsizes = {'BGS': 700, 'LRG': 700, 'ELG': 700, 'LRG+ELG': 700, 'QSO': 700}
         propose_cellsize = 20.
     else:
+        propose_weight = 'default-FKP'
+        propose_zranges = {'BGS': [(0.1, 0.4)], 'LRG': [(0.4, 0.6), (0.6, 0.8), (0.8, 1.1)], 
+                           'ELG': [(0.8, 1.1), (1.1, 1.6)], 'LRG+ELG': [(0.8, 1.1)], 'QSO': [(0.8, 2.1)]}
         propose_FKP_P0 = {'BGS': 7e3, 'LRG': 1e4, 'ELG': 4e3, 'LRG+ELG': 1e4, 'QSO': 6e3}
         propose_meshsizes = {'BGS': 750, 'LRG': 750, 'ELG': 960, 'LRG+ELG': 750, 'QSO': 1152}
         propose_cellsize = 7.5
-    propose_fiducial['catalog'].update(nran=propose_fiducial['nran'], FKP_P0=propose_FKP_P0[tracer])
+    propose_fiducial.update(zranges=propose_zranges[tracer])
+    propose_fiducial['catalog'].update(weight=propose_weight, nran=propose_fiducial['nran'], zranges=propose_zranges[tracer], FKP_P0=propose_FKP_P0[tracer])
     for stat in ['mesh2_spectrum', 'mesh3_spectrum']:
         propose_fiducial[stat]['mattrs'] = {'meshsize': propose_meshsizes[tracer], 'cellsize': propose_cellsize}
     if 'png' in analysis:
@@ -576,7 +582,100 @@ def get_stats_fn(stats_dir=Path(os.getenv('SCRATCH')) / 'measurements', kind='me
         basis = kwargs.get('basis', None)
         basis = f'_{basis}' if basis else ''
         kind = f'mesh3_spectrum{basis}_poles'
-    basename = f'{kind}_{tracer}{zrange}_{region}_{weight}{auw}{cut}{extra}{imock}.{ext}'
+    basename = f'{kind}_{tracer}{zrange}_{region}_weight-{weight}{auw}{cut}{extra}{imock}.{ext}'
+    return stats_dir / basename
+
+
+def get_box_stats_fn(stats_dir='/global/cfs/cdirs/desi/science/gqc/y3_fits/mockchallenge_abacushf/measurements', 
+                     kind='mesh2_spectrum', extra='', ext='h5', **kwargs):
+    """
+    Return measurement filename for box mocks with given parameters.
+
+    Parameters
+    ----------
+    stats_dir : str, Path
+        Directory containing the measurements.
+    version : str, optional
+        Measurement version. Default is 'v2'.
+    kind : str
+        Measurement kind. Options are 'particle2_correlation', 'mesh2_spectrum', 'mesh3_spectrum', etc.
+    tracer : str
+        Tracer name.
+    cosmo : str
+        Cosmology label (e.g., 'c000').
+    zrange : tuple, optional
+        Redshift range of interest. This will be mapped to a specific box snapshot.
+    box_type : str, optional
+        Type of box (e.g., 'base'). Default is 'base'.
+    hod : str, optional
+        HOD flavor (e.g., 'B', 'dv'). Default is None (baseline HOD).
+    los : str, optional
+        Line of sight direction (e.g., 'z'). Default is 'z'.
+    imock : int, str, optional
+        Mock index. If '*', return all existing mock filenames.
+    extra : str, optional
+        Extra string to append to filename.
+    ext : str
+        File extension. Default is 'h5'.
+
+    Returns
+    -------
+    fn : str, Path, list
+        Measurement filename(s).
+        Multiple filenames are returned as a list when imock is '*'.
+    """
+    _default_options = dict(version='v2', tracer=None, cosmo=None, zrange=None, box_type='base', hod=None, los='z', imock=None)
+    catalog_options = kwargs.get('catalog', {})
+    if not catalog_options:
+        catalog_options = {key: kwargs.get(key, _default_options[key]) for key, value in _default_options.items()}
+        catalog_options = _unzip_catalog_options(catalog_options)
+    else:
+        catalog_options = _unzip_catalog_options(catalog_options)
+        _default_options.pop('tracer')
+        catalog_options = {tracer: _default_options | catalog_options[tracer] for tracer in catalog_options}
+    catalog_options = _zip_catalog_options(catalog_options, squeeze=False)
+    imock = catalog_options['imock']
+    
+    if imock[0] and imock[0] == '*':
+        fns = [get_box_stats_fn(stats_dir=stats_dir, kind=kind, ext=ext, catalog=catalog_options | dict(imock=(imock,)), **kwargs) for imock in range(1000)]
+        return [fn for fn in fns if os.path.exists(fn)]
+
+    stats_dir = Path(stats_dir)
+
+    def join_if_not_none(f, key):
+        items = catalog_options[key]
+        if any(item is not None for item in items):
+            return join_tracers(tuple(f(item) for item in items if item is not None))
+        return ''
+
+    def check_is_not_none(key):
+        items = catalog_options[key]
+        assert all(item is not None for item in items), f'provide {key}'
+        return items
+
+    version = join_if_not_none(str, 'version')
+    if version: stats_dir = stats_dir / version
+    tracer = join_tracers(check_is_not_none('tracer'))
+    cosmo = join_tracers(check_is_not_none('cosmo'))
+    zrange = join_if_not_none(lambda zrange: f'z{zrange[0]:.1f}-{zrange[1]:.1f}', 'zrange')
+    zrange = f'_{zrange}' if zrange else ''
+    box_type = join_tracers(check_is_not_none('box_type'))
+    hod = join_if_not_none(str, 'hod')
+    hod = f'_{hod}' if hod else ''
+    los = join_tracers(check_is_not_none('los'))
+    extra = f'_{extra}' if extra else ''
+    imock = join_if_not_none(str, 'imock')
+    imock = f'_{imock}' if imock else ''
+    corr_type = 'smu'
+    battrs = kwargs.get('battrs', None)
+    if battrs is not None: corr_type = ''.join(list(battrs))
+    kind = {'mesh2_spectrum': 'mesh2_spectrum_poles',
+            'particle2_correlation': f'particle2_correlation_{corr_type}'}.get(kind, kind)
+    if 'mesh3' in kind:
+        basis = kwargs.get('basis', None)
+        basis = f'_{basis}' if basis else ''
+        kind = f'mesh3_spectrum{basis}_poles'
+    basename = f'{kind}_{tracer}{zrange}_{cosmo}_{box_type}{hod}_los{los}{extra}{imock}.{ext}'
     return stats_dir / basename
 
 
@@ -834,7 +933,7 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
         raise IOError(f'Catalogs {[fn for ex, fn in exists.items() if not ex]} do not exist!')
 
     if kind == 'randoms' and isinstance(expand, dict):
-        from_data = expand.get('from_data', ['Z'])
+        from_data = expand.get('from_data', ['Z','WEIGHT_SYS'])
         from_randoms = expand.get('from_randoms', ['RA', 'DEC'])
         parent_randoms_fn = expand['parent_randoms_fn']
         if not isinstance(parent_randoms_fn, (tuple, list)):
@@ -865,7 +964,7 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
             catalog = _read_catalog(fn, mpicomm=MPI.COMM_SELF)
             if expand is not None:
                 catalog = expand(catalog, ifn)
-            columns = ['RA', 'DEC', 'Z', 'WEIGHT', 'WEIGHT_COMP', 'WEIGHT_FKP', 'BITWEIGHTS', 'FRAC_TLOBS_TILES', 'NTILE', 'NX', 'TARGETID']
+            columns = ['RA', 'DEC', 'Z', 'WEIGHT', 'WEIGHT_COMP', 'WEIGHT_FKP', 'WEIGHT_SYS', 'BITWEIGHTS', 'FRAC_TLOBS_TILES', 'NTILE', 'NX', 'TARGETID']
             columns = [column for column in columns if column in catalog.columns()]
             catalog = catalog[columns]
             if zrange is not None:
@@ -892,9 +991,14 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
             elif kind == 'randoms':
                 individual_weight = catalog['WEIGHT'] * get_binned_weight(catalog, binned_weight['missing_power'])
         if 'FKP' in weight_type.upper():
+            if mpicomm.rank == 0: logger.info('Multiplying individual weights by WEIGHT_FKP')
             if FKP_P0 is not None:
                 catalog['WEIGHT_FKP'] = 1. / (1. + catalog['NX'] * FKP_P0)
             individual_weight *= catalog['WEIGHT_FKP']
+        if 'noimsys' in weight_type:
+            # this assumes that the WEIGHT column contains WEIGHT_SYS
+            if mpicomm.rank == 0: logger.info('Dividing individual weights by WEIGHT_SYS')
+            individual_weight /= catalog['WEIGHT_SYS']
         if 'comp' in weight_type:
             individual_weight *= get_binned_weight(catalog, binned_weight['completeness'])
         catalog = catalog[['RA', 'DEC', 'Z', 'NX', 'TARGETID']]
