@@ -296,6 +296,9 @@ def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
     else:
         propose_fiducial['mesh2_spectrum'].update(ells=(0, 2, 4))
         propose_fiducial['mesh3_spectrum'].update(ells=[(0, 0, 0), (2, 0, 2)], basis='sugiyama-diagonal', selection_weights={tracer: functools.partial(compute_fiducial_selection_weights, tracer=tracer) for tracer in tracers})
+    if 'protected' in analysis:
+        propose_fiducial['mesh2_spectrum'].update(ells=(0,))
+        propose_fiducial['mesh3_spectrum'].update(ells=[(0, 0, 0)])
     for stat in ['recon']:
         recon_cellsize = propose_fiducial[stat]['smoothing_radius'] / 3.
         primes, divisors = (2, 3, 5), (2,)
@@ -485,6 +488,16 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
             else:
                 cat_dir = desi_dir / f'survey/catalogs/Y3/mocks/SecondGenMocks/AbacusSummit_v4_1/altmtl{imock:d}/kibo-v1/mock{imock:d}/LSScats'
             ext = 'fits'
+        elif 'uchuu-hf' in version:
+            if 'altmtl' in version:
+                # Do not exist anymore?
+                cat_dir =  Path(desi_dir / f'mocks/cai/Uchuu-SHAM/Y3-v2.0/{imock:04d}/altmtl/')
+            else:
+                cat_dir =  Path(desi_dir / f'mocks/cai/Uchuu-SHAM/Y3-v2.0/{imock:04d}/complete/')
+            if kind == 'data':
+                return Path(cat_dir / f'Uchuu-SHAM_{get_simple_tracer(tracer)}_Y3-v2.0_0000_clustering.dat.fits')
+            if kind == 'randoms':
+                return [cat_dir / f'Uchuu-SHAM_{get_simple_tracer(tracer)}_Y3-v2.0_0000_{iran}_clustering.ran.fits' for iran in range(nran)]
     cat_dir = Path(cat_dir)
     if kind == 'data':
         return cat_dir / f'{tracer}_{region}_clustering.dat.{ext}'
@@ -760,10 +773,20 @@ def _format_bitweights(bitweights):
 def _read_catalog(fn, mpicomm=None):
     """Wrapper around :meth:`Catalog.read` to read catalog(s)."""
     one_fn = fn[0] if isinstance(fn, (tuple, list)) else fn
-    kw = {}
-    if str(one_fn).endswith('.h5'): kw['group'] = 'LSS'
-    catalog = Catalog.read(fn, mpicomm=mpicomm, **kw)
+    if str(one_fn).endswith('.h5'): 
+        try:
+            catalog = Catalog.read(fn, mpicomm=mpicomm, group='LSS')
+        except KeyError:
+            catalog = Catalog.read(fn, mpicomm=mpicomm)
+    else:
+        catalog = Catalog.read(fn, mpicomm=mpicomm)
     if str(one_fn).endswith('.fits'): catalog.get(catalog.columns())  # Faster to read all columns at once
+    if 'WEIGHT' not in catalog:
+        warnings.warn('WEIGHT not in catalog')
+        catalog['WEIGHT'] = catalog.ones()
+    if 'TARGETID' not in catalog:
+        warnings.warn('TARGETID not in catalog')
+        catalog['TARGETID'] = catalog.cindex()
     return catalog
 
 
@@ -1001,7 +1024,7 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
             individual_weight /= catalog['WEIGHT_SYS']
         if 'comp' in weight_type:
             individual_weight *= get_binned_weight(catalog, binned_weight['completeness'])
-        catalog = catalog[['RA', 'DEC', 'Z', 'NX', 'TARGETID']]
+        catalog = catalog[[column for column in ['RA', 'DEC', 'Z', 'NX', 'TARGETID'] if column in catalog]]
         catalog['INDWEIGHT'] = individual_weight
         for column in catalog:
             if not np.issubdtype(catalog[column].dtype, np.integer):
