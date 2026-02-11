@@ -509,8 +509,13 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
     elif 'full' not in kind:
         if region in ['S', 'ALL']: regions = ['NGC', 'SGC']
         else: raise NotImplementedError(f'{region} is unknown')
-        return [get_catalog_fn(version=version, cat_dir=cat_dir, kind=kind, tracer=tracer,
-                               region=region, weight=weight, nran=nran, imock=imock, ext=ext, **kwargs) for region in regions]
+        fn_lists =  [get_catalog_fn(version=version, cat_dir=cat_dir, kind=kind, tracer=tracer,
+                                    region=region, weight=weight, nran=nran, imock=imock, ext=ext, **kwargs) for region in regions]
+        # flatten list of lists (can append with nrand > 1 and region='ALL')
+        if any(isinstance(fn_list, list) for fn_list in fn_lists):
+            return [fn for fn_list in fn_lists for fn in (fn_list if isinstance(fn_list, list) else [fn_list])]
+        else:
+            return fn_lists
 
     if cat_dir is None:  # pre-registered paths
         if version == 'data-dr1-v1.5':
@@ -860,8 +865,9 @@ def _read_catalog(fn, mpicomm=None, **kwargs):
     import warnings
     one_fn = fn[0] if isinstance(fn, (tuple, list)) else fn
     if str(one_fn).endswith('.h5'): 
+        kwargs.setdefault('locking', False)  # fix -> Unable to synchronously open file (unable to lock file, errno = 524, error message = 'Unknown error 524')
         try:
-            catalog = Catalog.read(fn, mpicomm=mpicomm, group='LSS', **kwargs)
+            catalog = Catalog.read(fn, group='LSS', mpicomm=mpicomm, **kwargs)
         except KeyError:
             catalog = Catalog.read(fn, mpicomm=mpicomm)
     else:
@@ -1004,7 +1010,7 @@ def expand_randoms(randoms, parent_randoms, data, from_randoms=('RA', 'DEC'), fr
 
 @default_mpicomm
 def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_catalog_fn, get_positions_from_rdz=get_positions_from_rdz,
-                            expand=None, FKP_P0=None, binned_weight=None, mpicomm=None, **kwargs):
+                            expand=None, FKP_P0=None, binned_weight=None, return_all_columns=False, mpicomm=None, **kwargs):
     """
     Read clustering catalog (data or randoms) with given parameters.
 
@@ -1035,9 +1041,12 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
         Catalog object or list of Catalog objects (if ``concatenate`` is False).
         Contains 'RA', 'DEC', 'Z', 'NX', 'TARGETID', 'POSITION', 'INDWEIGHT' (individual weight), 'BITWEIGHT' columns.
     """
-    assert kind in ['data', 'randoms'], 'provide kind'
-
+    
     zrange, region, weight_type = (kwargs.get(key) for key in ['zrange', 'region', 'weight'])
+
+    assert kind in ['data', 'randoms'], 'provide kind (data or randoms)'
+    assert weight_type is not None, 'provide weight'
+
     fns = get_catalog_fn(kind=kind, **kwargs)
     if not isinstance(fns, (tuple, list)): fns = [fns]
     exists = {os.path.exists(fn): fn for fn in fns}
@@ -1045,7 +1054,7 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
         raise IOError(f'Catalogs {[fn for ex, fn in exists.items() if not ex]} do not exist!')
 
     if kind == 'randoms' and isinstance(expand, dict):
-        from_data = expand.get('from_data', ['Z','WEIGHT_SYS'])
+        from_data = expand.get('from_data', ['Z','WEIGHT_SYS', 'FRAC_TLOBS_TILES'])
         from_randoms = expand.get('from_randoms', ['RA', 'DEC'])
         parent_randoms_fn = expand['parent_randoms_fn']
         if not isinstance(parent_randoms_fn, (tuple, list)):
@@ -1074,20 +1083,19 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
         catalogs[ifn] = (irank, None)
         if mpicomm.rank == irank:  # Faster to read catalogs from one rank
             catalog = _read_catalog(fn, mpicomm=MPI.COMM_SELF)
-            if expand is not None:
+            if expand is not None: 
                 catalog = expand(catalog, ifn)
             columns = ['RA', 'DEC', 'Z', 'WEIGHT', 'WEIGHT_COMP', 'WEIGHT_FKP', 'WEIGHT_SYS', 'BITWEIGHTS', 'FRAC_TLOBS_TILES', 'NTILE', 'NX', 'TARGETID']
             columns = [column for column in columns if column in catalog.columns()]
             catalog = catalog[columns]
-            if zrange is not None:
-                mask = (catalog['Z'] >= zrange[0]) & (catalog['Z'] < zrange[1])
-                catalog = catalog[mask]
-            if 'bitwise' in weight_type:
-                mask = (catalog['FRAC_TLOBS_TILES'] != 0)
-                catalog = catalog[mask]
-            if region is not None:
-                mask = select_region(catalog['RA'], catalog['DEC'], region)
-                catalog = catalog[mask]
+
+            if zrange is not None: 
+                catalog = catalog[(catalog['Z'] >= zrange[0]) & (catalog['Z'] < zrange[1])]
+            if 'bitwise' in weight_type: 
+                catalog = catalog[(catalog['FRAC_TLOBS_TILES'] != 0)]
+            if region is not None: 
+                catalog = catalog[select_region(catalog['RA'], catalog['DEC'], region)]
+
             catalogs[ifn] = (irank, catalog)
 
     rdzw = []
@@ -1096,24 +1104,31 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
             catalog = Catalog.scatter(catalog, mpicomm=mpicomm, mpiroot=irank)
         individual_weight = catalog['WEIGHT']
         bitwise_weights = None
+
         if 'bitwise' in weight_type:
             if kind == 'data':
                 individual_weight = catalog['WEIGHT'] / catalog['WEIGHT_COMP']
                 bitwise_weights = catalog['BITWEIGHTS']
             elif kind == 'randoms':
                 individual_weight = catalog['WEIGHT'] * get_binned_weight(catalog, binned_weight['missing_power'])
+
         if 'FKP' in weight_type.upper():
             if mpicomm.rank == 0: logger.info('Multiplying individual weights by WEIGHT_FKP')
             if FKP_P0 is not None:
                 catalog['WEIGHT_FKP'] = 1. / (1. + catalog['NX'] * FKP_P0)
             individual_weight *= catalog['WEIGHT_FKP']
+
         if 'noimsys' in weight_type:
             # this assumes that the WEIGHT column contains WEIGHT_SYS
             if mpicomm.rank == 0: logger.info('Dividing individual weights by WEIGHT_SYS')
             individual_weight /= catalog['WEIGHT_SYS']
+
         if 'comp' in weight_type:
             individual_weight *= get_binned_weight(catalog, binned_weight['completeness'])
-        catalog = catalog[[column for column in ['RA', 'DEC', 'Z', 'NX', 'TARGETID'] if column in catalog]]
+
+        if not return_all_columns: 
+            catalog = catalog[[column for column in ['RA', 'DEC', 'Z', 'NX', 'TARGETID'] if column in catalog]]
+        
         catalog['INDWEIGHT'] = individual_weight
         for column in catalog:
             if not np.issubdtype(catalog[column].dtype, np.integer):
