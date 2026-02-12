@@ -86,21 +86,26 @@ if __name__ == '__main__':
         run_stats(('ELG_LOPnotqso', 'QSO'), **kw, stats_dir=stats_dir)
 
     if 'test' in todo:
-        version = 'v4.80'
+        #version = 'v4.00'
+        version = 'v4.60'
+        tracers = ['LRG', 'ELG', 'QSO'][:1]
 
         def get_catalog_fn(kind='data', tracer='LRG', imock=0, **kwargs):
-            cat_dir = Path(f'/dvs_ro/cfs/cdirs/desi/mocks/cai/holi/webjax_{version}/') / f'seed{imock:04d}'
+            if version == 'v4.00':
+                cat_dir = Path(f'/dvs_ro/cfs/cdirs/desi/mocks/cai/holi/{version}/') / f'seed{imock:04d}'
+            else:
+                cat_dir = Path(f'/dvs_ro/cfs/cdirs/desi/mocks/cai/holi/webjax_{version}/') / f'seed{imock:04d}'
             if kind == 'data':
                 return cat_dir / f'holi_{tracer}_{version}_GCcomb_clustering.dat.h5'
             if kind == 'randoms':
                 return [cat_dir / f'holi_{tracer}_{version}_GCcomb_0_clustering.ran.h5']
 
         imocks = []
-        for imock in range(100):
-            if all(get_catalog_fn(kind='data', tracer=tracer, imock=imock).exists() for tracer in ['LRG', 'ELG', 'QSO']):
+        for imock in range(1000):
+            if all(get_catalog_fn(kind='data', tracer=tracer, imock=imock).exists() for tracer in tracers):
                 imocks.append(imock)
             if imock > 9: break
         print(f'Running {imocks}')
 
-        for tracer in ['LRG', 'ELG', 'QSO']:
+        for tracer in tracers:
             run_stats(tracer, version=f'holi-{version}', weight=weight, stats=stats, stats_dir=stats_dir, get_catalog_fn=get_catalog_fn, imocks=imocks)
