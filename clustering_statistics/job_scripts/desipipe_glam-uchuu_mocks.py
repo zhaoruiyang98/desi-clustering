@@ -57,7 +57,7 @@ def run_stats(tracer='LRG', version='glam-uchuu-v1-altmtl', imocks=[100], stats_
     zranges = tools.propose_fiducial('zranges', tracer, analysis=analysis)
     for imock in imocks:
         for region in regions:
-            if analysis == 'full_shape':
+            if analysis == 'full_shape' and not noric:
                 mesh2_spectrum = {'cut': True, 'auw': True}
             elif analysis == 'png_local':
                 mesh2_spectrum = dict(optimal_weights=functools.partial(tools.compute_fiducial_png_weights, tracer=tracer) if 'oqe' in weight else None)
@@ -86,7 +86,7 @@ if __name__ == '__main__':
     cai_dir    = Path(f'/global/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/desipipe/')
     stats_dir  = cai_dir / analysis
     merged_dir = cai_dir / version / 'merged'
-    noric = False
+    noric = True
     
     # mode = 'interactive'
     # imocks2run = np.arange(100,100+1)
@@ -97,11 +97,18 @@ if __name__ == '__main__':
     # merged_dir = Path(os.getenv('SCRATCH')) / 'cai-dr2-benchmarks' / version / 'merged'
 
     if analysis == 'full_shape':
-        stats   = ['mesh2_spectrum', 'mesh3_spectrum']
-        weights = ['default-noimsys-FKP','default-FKP']
+        if noric:
+            stats   = ['mesh2_spectrum', 'mesh3_spectrum']
+            weights = ['default-FKP']
+        else:
+            stats   = ['mesh2_spectrum', 'mesh3_spectrum']
+            weights = ['default-noimsys-FKP','default-FKP']
     elif analysis == 'png_local':
         stats   = ['mesh2_spectrum']
-        weights = ['default-noimsys-oqe','default-oqe']
+        if noric:
+            weights = ['default-oqe']
+        else:
+            weights = ['default-noimsys-oqe','default-oqe']
     else:
         raise ValueError(f'{analysis} not supported.')
 
@@ -113,7 +120,8 @@ if __name__ == '__main__':
                 rerun = []
                 for zrange in tools.propose_fiducial('zranges', tracer, analysis=analysis):
                     for kind in stats:
-                        stats_kws = dict(basis='sugiyama-diagonal', kind=kind, stats_dir=stats_dir, tracer=tracer, region='GCcomb', weight=weight, zrange=zrange, version=version)
+                        stats_kws = dict(basis='sugiyama-diagonal', kind=kind, stats_dir=stats_dir, tracer=tracer, region='GCcomb', weight=weight, zrange=zrange,
+                                         version=version, extra='noric' if noric else '')
                         rexists, missing, unreadable = tools.checks_if_exists_and_readable(get_fn=functools.partial(tools.get_stats_fn, **stats_kws), test_if_readable=True, imock=imocks2run)
                         rerun += [imock for imock in imocks if (imock in unreadable[1]['imock']) or (imock not in rexists[1]['imock'])]
                 imocks = sorted(set(rerun))
