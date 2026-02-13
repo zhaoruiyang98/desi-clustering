@@ -62,19 +62,21 @@ def run_stats(tracer='LRG', zranges=None, version='holi-v4.80', weight='default-
     #jax.distributed.shutdown()
 
 
-def plot_density(imock=[0], tracer='LRG', zranges=None, version='holi-v4.80', weight='default', plots_dir=Path('./_plots'), get_catalog_fn=tools.get_catalog_fn):
+def plot_density(imock=[0], tracer='LRG', zranges=None, version='holi-v4.80', weight='default', plots_dir=Path('./_plots'), nside=128, get_catalog_fn=tools.get_catalog_fn):
     from clustering_statistics.density_tools import plot_density_projections
     if zranges is None:
         zranges = tools.propose_fiducial('zranges', tracer)
     region = 'ALL'
     for zrange in zranges:
         zstep = 0.01
-        zedges = np.arange(zrange[0], zrange[1] + zstep, zstep)
+        edges = {'Z': np.arange(zrange[0], zrange[1] + zstep, zstep),
+                 'RA': np.linspace(0., 360., 361),
+                 'DEC': np.linspace(-90., 90., 181)}
         catalog = dict(version=version, tracer=tracer, zrange=zrange, region=region, weight=weight)
-        plot_density_projections(get_catalog_fn=get_catalog_fn, divide_randoms='same', catalog=catalog,
-                                 imock=imock, zedges=zedges, fn=plots_dir / f'density_fluctuations_{version}_weight-{weight}_{tracer}_{region}_z{zrange[0]:.1f}-{zrange[1]:.1f}.png')
+        plot_density_projections(get_catalog_fn=get_catalog_fn, divide_randoms=True, catalog=catalog,
+                                 imock=imock, edges=edges, fn=plots_dir / f'density_fluctuations_{version}_weight-{weight}_{tracer}_{region}_z{zrange[0]:.1f}-{zrange[1]:.1f}.png', nside=nside)
         plot_density_projections(get_catalog_fn=get_catalog_fn, divide_randoms=False, catalog=catalog,
-                                 imock=imock, zedges=zedges, fn=plots_dir / f'density_{version}_weight-{weight}_{tracer}_{region}_z{zrange[0]:.1f}-{zrange[1]:.1f}.png')
+                                 imock=imock, edges=edges, fn=plots_dir / f'density_{version}_weight-{weight}_{tracer}_{region}_z{zrange[0]:.1f}-{zrange[1]:.1f}.png', nside=nside)
 
 
 if __name__ == '__main__':
@@ -118,9 +120,9 @@ if __name__ == '__main__':
 
         imocks = []
         for imock in range(1000):
-            if all(get_holi_catalog_fn(kind='data', tracer=tracer, version=version, imock=imock).exists() for tracer in tracers):
+            if all(get_holi_catalog_fn(kind='data', tracer=tracer, version=version, imock=imock).exists() for tracer in tracers for kind in ['data']):
                 imocks.append(imock)
-            if imock > 9: break
+            if len(imocks) > 9: break
         print(f'Running {imocks}')
 
         for tracer in tracers:
@@ -132,9 +134,9 @@ if __name__ == '__main__':
 
         imocks = []
         for imock in range(1000):
-            if all(get_holi_catalog_fn(kind='data', tracer=tracer, version=version, imock=imock).exists() for tracer in tracers):
+            if all(get_holi_catalog_fn(kind=kind, tracer=tracer, version=version, imock=imock).exists() for tracer in tracers for kind in ['data']):
                 imocks.append(imock)
-            if imock > 5: break
+            if len(imocks) > 8: break
         print(f'Running {imocks}')
         for tracer in tracers:
             plot_density(imock=imocks, tracer=tracer, version=version, weight='default', get_catalog_fn=get_holi_catalog_fn)

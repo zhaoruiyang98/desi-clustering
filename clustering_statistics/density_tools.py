@@ -67,7 +67,7 @@ def compute_angular_density(catalog, nside: int=256, nest: bool=False, backend: 
     return hpmap
 
 
-def compute_redshift_density(catalog, edges=None, backend: str='numpy'):
+def compute_histogram1d(catalog, name='Z', edges=None, backend: str='numpy'):
     """
     Compute a weighted redshift histogram for a catalog.
 
@@ -75,6 +75,8 @@ def compute_redshift_density(catalog, edges=None, backend: str='numpy'):
     ----------
     catalog : Catalog
         Catalog.
+    name : str
+        Column name to bin along.
     edges : sequence or int or None, optional
         Bin edges for the histogram. If an integer is provided, that number of
         equal-width bins between min(z) and max(z) is constructed.
@@ -85,7 +87,7 @@ def compute_redshift_density(catalog, edges=None, backend: str='numpy'):
     -------
     hist, edges
     """
-    z, weights = catalog['Z'], catalog.get('INDWEIGHT', catalog.ones())
+    z, weights = catalog[name], catalog.get('INDWEIGHT', catalog.ones())
     if isinstance(edges, int):
         import mpytools as mpy
         cmin, cmax = mpy.cmin(z), mpy.cmax(z)
@@ -104,7 +106,7 @@ def compute_redshift_density(catalog, edges=None, backend: str='numpy'):
 
 
 def plot_density_projections(get_catalog_fn=tools.get_catalog_fn, read_catalog=tools.read_clustering_catalog,
-                             catalog=dict(), divide_randoms: bool | str=False, backend: str='numpy', zedges=None,
+                             catalog=dict(), divide_randoms: bool | str=False, backend: str='numpy', edges=None,
                              nside=256, fn=None, **kwargs):
     """
     Plot angular density projections (HEALPix) and optional redshift distributions.
@@ -126,8 +128,8 @@ def plot_density_projections(get_catalog_fn=tools.get_catalog_fn, read_catalog=t
         Pass 'same' to reuse the same randoms.
     backend : {'numpy', 'jax'}, optional
         Backend to use for map/histogram computation.
-    zedges : sequence or None, optional
-        If provided, compute and plot redshift histograms using these edges.
+    edges : dict of sequence, optional
+        If provided, compute and plot histograms using these edges.
     nside : int, optional
         HEALPix nside resolution for angular maps.
     fn : str or None, optional
@@ -141,9 +143,11 @@ def plot_density_projections(get_catalog_fn=tools.get_catalog_fn, read_catalog=t
         Figure containing the HEALPix projection (and z-histogram if requested).
     """
     nest = False
-    with_zhist = zedges is not None
-    randoms_hpmap = randoms_zhist = None
-    hpmap, list_zhist = 0., []
+    randoms_hpmap = randoms_hist = None
+    hpmap = 0.
+    edges = edges or {}
+    hist_names = list(edges.keys())
+    hists = {name: [] for name in hist_names}
     ndata = 0
     rank = 0
     names, values = zip(*kwargs.items())
@@ -152,38 +156,60 @@ def plot_density_projections(get_catalog_fn=tools.get_catalog_fn, read_catalog=t
         data = read_catalog(kind='data', **fn_kwargs)
         rank = data.mpicomm.rank
         data_hpmap = compute_angular_density(data, nside=nside, nest=nest, backend=backend)
-        if with_zhist:
-            data_zhist = compute_redshift_density(data, edges=zedges, backend=backend)[0]
+        data_hist = {}
+        for name in hist_names:
+            data_hist[name] = compute_histogram1d(data, name=name, edges=edges[name], backend=backend)[0]
         if divide_randoms:
             if not (divide_randoms == 'same' and randoms_hpmap is not None):
                 randoms = read_catalog(kind='randoms', **fn_kwargs)
                 randoms_hpmap = compute_angular_density(randoms, nside=nside, nest=nest, backend=backend)
-                if with_zhist: randoms_zhist = compute_redshift_density(randoms, edges=zedges, backend=backend)[0]
+                randoms_hist = {}
+                for name in hist_names:
+                    randoms_hist[name] = compute_histogram1d(randoms, name=name, edges=edges[name], backend=backend)[0]
                 del randoms
             data_hpmap = data_hpmap / randoms_hpmap * randoms_hpmap.sum() / data_hpmap.sum()
-            if with_zhist:
-                data_zhist = data_zhist / randoms_zhist * randoms_zhist.sum() / data_zhist.sum()
+            for name in hist_names:
+                data_hist[name] = data_hist[name] / randoms_hist[name] * randoms_hist[name].sum() / data_hist[name].sum()
         hpmap += data_hpmap
-        if with_zhist:
-            list_zhist.append(data_zhist)
         ndata += 1
+        for name in hists:
+            hists[name].append(data_hist[name])
 
     hpmap = hpmap / ndata
-    fig, lax = plt.subplots(1, 1 + with_zhist, figsize=(6 + 2 * with_zhist, 4),
-                            gridspec_kw={'width_ratios': [6] + ([2 * with_zhist] if with_zhist else [])},
-                            squeeze=False)
-    lax = lax.ravel()
-    plt.sca(lax[0])
+
+    # --- Layout decisions ---
+    with_bottom = len(hist_names) > 0
+    nrows = 1 + int(with_bottom)
+    ncols = 1
+    height_ratios = [4] + ([2] if with_bottom else [])
+    fig = plt.figure(figsize=(10, 4 + 3 * int(with_bottom)))
+    gs = fig.add_gridspec(
+        nrows=nrows,
+        ncols=ncols,
+        height_ratios=height_ratios
+    )
+    # --- Top row: Mollweide map ---
+    ax_map = fig.add_subplot(gs[0, 0])
+    plt.sca(ax_map)
     hp.mollview(hpmap, hold=True, cbar=True, nest=nest)
-    if with_zhist:
-        ax = lax[1]
-        z = (zedges[:-1] + zedges[1:]) / 2.
-        mean = np.mean(list_zhist, axis=0)
-        std = np.std(list_zhist, axis=0) / len(list_zhist)**0.5
-        ax.plot(z, mean, color='k')
-        ax.fill_between(z, mean - std, mean + std, color='k', alpha=0.2)
-        ax.set_xlabel('$z$')
-        ax.set_ylabel('$n(z)$')
+    # --- Bottom row: 1D histograms ---
+    if with_bottom:
+        sub = gs[1, 0].subgridspec(1, len(hist_names), wspace=0.35)
+        for iname, name in enumerate(hist_names):
+            ax = fig.add_subplot(sub[0, iname])
+            e = np.asarray(edges[name])
+            x = 0.5 * (e[:-1] + e[1:])
+            mean = np.mean(hists[name], axis=0)
+            std = np.std(hists[name], axis=0, ddof=0) / np.sqrt(len(hists[name]))
+            # step-style histogram
+            ax.plot(x, mean, color='k')
+            ax.fill_between(x, mean - std, mean + std, color='k', alpha=0.2)
+            ax.set_xlabel(name)
+            if divide_randoms:
+                ax.grid(True)
+            if iname == 0:
+                ax.set_ylabel("counts")
+
     if fn is not None:
         plt.tight_layout()
         tools.mkdir(os.path.dirname(fn))

@@ -80,7 +80,7 @@ if __name__ == '__main__':
     version = 'glam-uchuu-v1-altmtl'
     
     mode = 'slurm'
-    imocks2run = np.arange(100,150+1)
+    imocks2run = np.arange(100, 150+1)
     analysis = 'full_shape'
     tracers  = ['LRG', 'ELG_LOPnotqso', 'QSO']
     cai_dir    = Path(f'/global/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/desipipe/')
