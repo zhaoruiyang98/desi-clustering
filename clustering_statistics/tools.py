@@ -1498,7 +1498,7 @@ def reshuffle_randoms(tracer, randoms, merged_data, data, seed):
     merged_data_ftile_wcomp = merged_data_ftile / merged_data_wcomp
     merged_data_nz = merged_data['NX'] / merged_data_ftile_wcomp
 
-    P0 = np.rint(np.mean((1. / merged_data['WEIGHT_FKP'] - 1.) / merged_data['NX']))
+    # P0 = np.rint(np.mean((1. / merged_data['WEIGHT_FKP'] - 1.) / merged_data['NX']))
 
     if 'Z' not in randoms:
         randoms['Z'] = randoms.zeros() # place holder, since will be filled with 'Z' from merged_data anyway
@@ -1526,6 +1526,7 @@ def reshuffle_randoms(tracer, randoms, merged_data, data, seed):
         index = rng.choice(mask_merged_data.sum(), size=mask_randoms.sum())
         randoms['Z'][mask_randoms] = merged_data['Z'][mask_merged_data][index]
         randoms['WEIGHT'][mask_randoms] = (merged_data_wtotp * randoms_ftile)[mask_merged_data][index]
+        randoms['WEIGHT_SYS'][mask_randoms] = merged_data['WEIGHT_SYS'][mask_merged_data][index] # needed for when 'noimsys' is in weight option
         randoms['NZ'][mask_randoms] = merged_data_nz[mask_merged_data][index]
 
         sum_data_weights.append(data_wtotp[mask_data].sum())
@@ -1547,6 +1548,7 @@ def reshuffle_randoms(tracer, randoms, merged_data, data, seed):
     # randoms['WEIGHT_FKP'] = 1. / (1. + randoms['NX'] * P0)
     del randoms['NZ']
 
+    # below just double checks per region renormalization
     alphas = []
     sum_data_weights, sum_randoms_weights = [], []
     for region in regions:
@@ -1557,7 +1559,7 @@ def reshuffle_randoms(tracer, randoms, merged_data, data, seed):
 
     sum_data_weights, sum_randoms_weights = np.array(sum_data_weights), np.array(sum_randoms_weights)
     alphas = sum_data_weights / sum_randoms_weights / (sum(sum_data_weights) / sum(sum_randoms_weights))
-    # logger.info('alpha after renormalization & reweighting: {}'.format(alphas))
+    logger.info('alpha after renormalization & reweighting: {}'.format(alphas))
 
     # for iregion, region in enumerate(cregions):
     #     randoms[select_region(randoms['RA'], randoms['DEC'], region=region)][output_columns].write(output_randoms_fn[iregion])
