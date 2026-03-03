@@ -94,7 +94,7 @@ if __name__ == '__main__':
     for version, tracer, weight_type in itertools.product(args.versions, args.tracers, args.weight_types):
         # stats_dir = Path(f'/global/cfs/projectdirs/desi/mocks/cai/mock-challenge-cutsky-dr2/blinded_data/{version}/data_splits')
         stats_dir = Path(os.getenv('SCRATCH', '.')) / 'Y3_blinded/tests'
-        if version == 'data-dr2-v2' and 'mesh2_spectrum' in stats: raise ValueError('dr2 is unblinded yet')
+        if version == 'data-dr2-v2' and 'mesh2_spectrum' in stats: raise ValueError('dr2 is not unblinded yet')
         def get_run_stats():
             _tm = tm80
             if tracer in ['LRG']:
